@@ -7,13 +7,14 @@ if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
 from binaryninja import PluginCommand, TagType
-from binaryninja.interaction import show_message_box
+from binaryninja.interaction import show_message_box, get_choice_input, get_int_input
 from core.logging import get_logger
 from core.settings import register_setting
 from core.tags import create_tag_type, tag_item
 from core.ai_config import load_ai_config, resolve_provider
 
 from . import api
+from .ordering import ORDERINGS, OrderingError
 
 logger = get_logger("auto_rename")
 
@@ -55,7 +56,7 @@ def _apply_results(bv, results, tag_type):
     show_message_box("Auto Rename", msg)
 
 
-def _run_rename_batch(bv, funcs, tag_type, title):
+def _run_rename_batch(bv, funcs, tag_type, title, anchor=None, restrict_to=None, options=None):
     if not funcs:
         show_message_box("Auto Rename", "No auto-named functions found.")
         return
@@ -65,9 +66,19 @@ def _run_rename_batch(bv, funcs, tag_type, title):
         _apply_results(bv, results, tag_type)
 
     bv.begin_undo_actions()
-    api.rename_functions(
-        bv, funcs, async_run=True, on_complete=on_complete
-    )
+    try:
+        api.rename_functions(
+            bv,
+            funcs,
+            anchor=anchor,
+            restrict_to=restrict_to,
+            options=options,
+            async_run=True,
+            on_complete=on_complete,
+        )
+    except OrderingError as e:
+        bv.commit_undo_actions()
+        show_message_box("Auto Rename", f"This ordering requires a function to be selected: {e}")
 
 
 def _rename_current(bv):
@@ -76,7 +87,7 @@ def _rename_current(bv):
         show_message_box("Auto Rename", "No function selected.")
         return
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
-    _run_rename_batch(bv, [func], tag_type, "Renaming function")
+    _run_rename_batch(bv, [func], tag_type, "Renaming function", anchor=func)
 
 
 def _rename_selection(bv):
@@ -85,13 +96,22 @@ def _rename_selection(bv):
         show_message_box("Auto Rename", "No functions selected.")
         return
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
-    _run_rename_batch(bv, funcs, tag_type, "Renaming selection")
+    _run_rename_batch(
+        bv,
+        funcs,
+        tag_type,
+        "Renaming selection",
+        anchor=bv.get_current_function(),
+        restrict_to=funcs,
+    )
 
 
 def _rename_all(bv):
     auto_named = [f for f in bv.functions if _is_auto_named(f)]
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
-    _run_rename_batch(bv, auto_named, tag_type, "Renaming all functions")
+    _run_rename_batch(
+        bv, auto_named, tag_type, "Renaming all functions", anchor=bv.get_current_function()
+    )
 
 
 def _rename_filtered(bv):
@@ -115,7 +135,49 @@ def _rename_filtered(bv):
         if _is_auto_named(f) and compiled.match(f.name)
     ]
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
-    _run_rename_batch(bv, funcs, tag_type, "Renaming filtered functions")
+    _run_rename_batch(
+        bv, funcs, tag_type, "Renaming filtered functions", anchor=bv.get_current_function()
+    )
+
+
+def _rename_all_choose_strategy(bv):
+    ordering_idx = get_choice_input(
+        "Ordering strategy:", "Auto Rename All (Choose Strategy)", list(ORDERINGS)
+    )
+    if ordering_idx is None:
+        return
+    chosen_ordering = ORDERINGS[ordering_idx]
+
+    concurrency_choices = ["sequential", "fixed-pool"]
+    concurrency_idx = get_choice_input(
+        "Concurrency mode:", "Auto Rename All (Choose Strategy)", concurrency_choices
+    )
+    if concurrency_idx is None:
+        return
+    chosen_concurrency = concurrency_choices[concurrency_idx]
+
+    workers = None
+    if chosen_concurrency == "fixed-pool":
+        workers = get_int_input("Number of workers:", "Auto Rename All (Choose Strategy)")
+        if workers is None:
+            return
+
+    # One-shot only: this RenameOptions is used for this run and is not
+    # persisted to auto_rename.ordering / auto_rename.concurrency_mode / auto_rename.concurrency_workers.
+    options = api.RenameOptions(
+        ordering=chosen_ordering, concurrency=chosen_concurrency, workers=workers
+    )
+
+    auto_named = [f for f in bv.functions if _is_auto_named(f)]
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+    _run_rename_batch(
+        bv,
+        auto_named,
+        tag_type,
+        "Renaming all functions (custom strategy)",
+        anchor=bv.get_current_function(),
+        options=options,
+    )
 
 
 def _is_valid_func(bv):
@@ -142,13 +204,18 @@ register_setting(
     str(Path.home() / ".binaryninja" / "auto-rename.json"),
 )
 register_setting(
-    "auto_rename.parallel",
-    "Process functions in parallel",
-    False,
+    "auto_rename.ordering",
+    "Scheduling order for bulk renaming: " + ", ".join(ORDERINGS),
+    "default",
 )
 register_setting(
-    "auto_rename.concurrency",
-    "Max concurrent LLM calls",
+    "auto_rename.concurrency_mode",
+    "Concurrency mode for bulk renaming: sequential, fixed-pool",
+    "sequential",
+)
+register_setting(
+    "auto_rename.concurrency_workers",
+    "Max concurrent LLM calls when concurrency_mode is fixed-pool",
     3,
 )
 
@@ -169,6 +236,11 @@ PluginCommand.register_for_selection(
 )
 PluginCommand.register(
     "Auto Rename All", "Rename all auto-named functions using AI", _rename_all
+)
+PluginCommand.register(
+    "Auto Rename All (Choose Strategy)",
+    "Rename all auto-named functions using AI, picking ordering/concurrency for this run only",
+    _rename_all_choose_strategy,
 )
 
 try:

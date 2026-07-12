@@ -11,10 +11,16 @@ from core.retry import retry_with_backoff
 from core.logging import get_logger
 from core.exceptions import AIConfigError, AITimeoutError
 
+from . import ordering as ordering_mod
+from .ordering import OrderingError
+
 _plugin_dir = Path(__file__).resolve().parent
 logger = get_logger("auto_rename")
 
 _VALID_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9:]*(::[a-zA-Z_][a-zA-Z_0-9:]*)*$")
+
+_DEFAULT_CONCURRENCY_MODE = "sequential"
+_DEFAULT_CONCURRENCY_WORKERS = 3
 
 
 @dataclass
@@ -23,6 +29,9 @@ class RenameOptions:
     mode: Optional[str] = None
     temperature: Optional[float] = None
     custom_prompt: Optional[str] = None
+    ordering: Optional[str] = None
+    concurrency: Optional[str] = None
+    workers: Optional[int] = None
 
 
 @dataclass
@@ -194,6 +203,41 @@ def _build_llm(provider_config):
     return ChatOpenAI(**kwargs)
 
 
+def _resolve_scheduling(bv, options):
+    """Resolve (ordering, concurrency_mode, workers), options taking precedence
+    over BN settings, which supply the default when the option is unset."""
+    from binaryninja import Settings
+
+    settings = Settings()
+    ordering = (options.ordering if options else None) or settings.get_string(
+        "auto_rename.ordering", resource=bv
+    )
+    concurrency = (options.concurrency if options else None) or settings.get_string(
+        "auto_rename.concurrency_mode", resource=bv
+    )
+    workers = (options.workers if options else None) or settings.get_integer(
+        "auto_rename.concurrency_workers", resource=bv
+    )
+    return ordering or "default", concurrency or _DEFAULT_CONCURRENCY_MODE, workers or _DEFAULT_CONCURRENCY_WORKERS
+
+
+def _resolve_roots(bv, ordering):
+    if ordering == "top-down":
+        entry = bv.entry_function
+        if entry is not None:
+            return [entry]
+        return ordering_mod.zero_caller_roots(list(bv.functions))
+    if ordering == "export-down":
+        from binaryninja.enums import SymbolBinding
+
+        return [
+            f
+            for f in bv.functions
+            if f.symbol is not None and f.symbol.binding == SymbolBinding.GlobalBinding
+        ]
+    return None
+
+
 def _rename_one(bv, func, prompt_template, llm, options):
     context = _build_context(bv, func)
     prompt = prompt_template.format(**context)
@@ -268,29 +312,64 @@ def rename_function(
 
 
 def rename_functions(
-    bv, funcs, *, provider=None, mode=None, options=None, progress=None, cancel=None, async_run=False, on_complete=None
+    bv,
+    funcs,
+    *,
+    provider=None,
+    mode=None,
+    options=None,
+    anchor=None,
+    restrict_to=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
 ):
+    """Rename multiple functions in batch.
+
+    `anchor` is required when `options.ordering` (or the
+    `auto_rename.ordering` setting) is one of the local-* strategies; see
+    `ordering.NEEDS_ANCHOR`. `restrict_to`, if given, confines local-*
+    graph traversal to that set of functions (e.g. a UI selection).
+    Raises `ordering.OrderingError` if a required input is missing.
+    """
+    funcs = list(funcs)
+
+    # Resolved and validated synchronously (not inside `_run`) so a missing
+    # anchor/roots raises immediately for the caller, even when async_run=True
+    # -- an exception raised inside the background thread would otherwise be
+    # swallowed by _AsyncResult instead of surfacing.
+    order, concurrency, workers = _resolve_scheduling(bv, options)
+    roots = _resolve_roots(bv, order) if order in ordering_mod.NEEDS_ROOTS else None
+    ordered_funcs = ordering_mod.order_functions(
+        funcs, order, anchor=anchor, roots=roots, restrict_to=restrict_to
+    )
+
+    if (
+        concurrency == "fixed-pool"
+        and workers > 1
+        and order in ordering_mod.PROPAGATION_DEPENDENT
+    ):
+        logger.warning(
+            f"ordering '{order}' relies on completion order for its context-propagation "
+            f"benefit; 'fixed-pool' concurrency with {workers} workers only guarantees "
+            f"submission order, so that benefit may be degraded"
+        )
+
     def _run():
         ai_config = load_ai_config()
         provider_config = resolve_provider(ai_config, provider)
         llm = _build_llm(provider_config)
         prompt_template = load_prompt(_plugin_dir, "rename.txt")
 
-        settings = bv.settings if hasattr(bv, "settings") else None
-        parallel = False
-        max_workers = 3
-        if settings:
-            parallel = settings.get_bool("auto_rename.parallel")
-            max_workers = settings.get_integer("auto_rename.concurrency")
-
-        if parallel:
+        if concurrency == "fixed-pool":
             import concurrent.futures
 
             results = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 future_map = {
                     pool.submit(retry_with_backoff, _rename_one, args=(bv, f, prompt_template, llm, options)): f
-                    for f in funcs
+                    for f in ordered_funcs
                 }
                 for i, future in enumerate(concurrent.futures.as_completed(future_map)):
                     if cancel and cancel():
@@ -302,17 +381,17 @@ def rename_functions(
                         result = RenameResult(address=func.start, old_name=func.name, error=str(e))
                     results.append(result)
                     if progress:
-                        progress(i + 1, len(funcs))
+                        progress(i + 1, len(ordered_funcs))
             return results
 
         results = []
-        for i, func in enumerate(funcs):
+        for i, func in enumerate(ordered_funcs):
             if cancel and cancel():
                 break
             result = rename_function(bv, func, provider=provider, options=options)
             results.append(result)
             if progress:
-                progress(i + 1, len(funcs))
+                progress(i + 1, len(ordered_funcs))
         return results
 
     if async_run:
@@ -320,16 +399,63 @@ def rename_functions(
     return _run()
 
 
-def rename_all(bv, *, provider=None, mode=None, options=None, progress=None, cancel=None, async_run=False, on_complete=None):
+def rename_all(
+    bv,
+    *,
+    provider=None,
+    mode=None,
+    options=None,
+    anchor=None,
+    restrict_to=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
+):
     funcs = [f for f in bv.functions if _is_auto_named(f)]
-    return rename_functions(bv, funcs, provider=provider, options=options, progress=progress, cancel=cancel, async_run=async_run, on_complete=on_complete)
+    return rename_functions(
+        bv,
+        funcs,
+        provider=provider,
+        options=options,
+        anchor=anchor,
+        restrict_to=restrict_to,
+        progress=progress,
+        cancel=cancel,
+        async_run=async_run,
+        on_complete=on_complete,
+    )
 
 
-def rename_filtered(bv, pattern, *, provider=None, mode=None, options=None, progress=None, cancel=None, async_run=False, on_complete=None):
+def rename_filtered(
+    bv,
+    pattern,
+    *,
+    provider=None,
+    mode=None,
+    options=None,
+    anchor=None,
+    restrict_to=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
+):
     import re
     compiled = re.compile(pattern)
     funcs = [f for f in bv.functions if _is_auto_named(f) and compiled.match(f.name)]
-    return rename_functions(bv, funcs, provider=provider, options=options, progress=progress, cancel=cancel, async_run=async_run, on_complete=on_complete)
+    return rename_functions(
+        bv,
+        funcs,
+        provider=provider,
+        options=options,
+        anchor=anchor,
+        restrict_to=restrict_to,
+        progress=progress,
+        cancel=cancel,
+        async_run=async_run,
+        on_complete=on_complete,
+    )
 
 
 def help():
@@ -338,16 +464,39 @@ def help():
 rename_function(bv, func, *, provider=None, mode=None, options=None) -> RenameResult
     Rename a single function based on its disassembly and context.
 
-rename_functions(bv, funcs, *, provider=None, mode=None, options=None, progress=None, cancel=None) -> list[RenameResult]
-    Rename multiple functions in batch.
+rename_functions(bv, funcs, *, provider=None, mode=None, options=None, anchor=None,
+                  restrict_to=None, progress=None, cancel=None) -> list[RenameResult]
+    Rename multiple functions in batch, ordered/scheduled per `options`.
 
-rename_all(bv, *, provider=None, mode=None, options=None, progress=None, cancel=None) -> list[RenameResult]
+rename_all(bv, *, provider=None, mode=None, options=None, anchor=None, restrict_to=None,
+           progress=None, cancel=None) -> list[RenameResult]
     Rename all auto-named functions in the binary.
 
-rename_filtered(bv, pattern, *, provider=None, mode=None, options=None, progress=None, cancel=None) -> list[RenameResult]
+rename_filtered(bv, pattern, *, provider=None, mode=None, options=None, anchor=None,
+                 restrict_to=None, progress=None, cancel=None) -> list[RenameResult]
     Rename functions matching a regex pattern.
+
+Scheduling:
+    `options.ordering` picks which function is renamed next (see
+    `ordering.ORDERINGS`): default, leaves-first, top-down, local-breadth,
+    local-bottom-up, local-up, export-down, info-gain. `local-*` orderings
+    require `anchor` (raises `ordering.OrderingError` if missing).
+    `restrict_to`, if given, confines local-* traversal to that set of
+    functions (e.g. a UI selection); unreachable members sort last.
+
+    `options.concurrency` picks how many run at once: "sequential" or
+    "fixed-pool" (with `options.workers` workers). Ordering under
+    fixed-pool is best-effort (submission order only, not completion
+    order) -- a warning is logged when a propagation-dependent ordering
+    (leaves-first, local-bottom-up, info-gain) is combined with
+    fixed-pool and workers > 1.
+
+    Both default from the `auto_rename.ordering` / `auto_rename.concurrency_mode`
+    / `auto_rename.concurrency_workers` BN settings when unset on `options`.
 
 Types:
     RenameResult(address: int, old_name: str, new_name: str | None, reasoning: str | None, error: str | None)
-    RenameOptions(provider: str | None, mode: str | None, temperature: float | None, custom_prompt: str | None)
+    RenameOptions(provider: str | None, mode: str | None, temperature: float | None,
+                  custom_prompt: str | None, ordering: str | None, concurrency: str | None,
+                  workers: int | None)
 """)
