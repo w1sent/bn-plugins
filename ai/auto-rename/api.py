@@ -90,21 +90,24 @@ def _build_context(bv, func):
     disassembly = "\n".join(hlil_lines) if hlil_lines else "(no HLIL available)"
 
     callers = []
-    for ref in func.callers:
+    for ref in func.caller_sites:
         caller = ref.function
+        if caller is None:
+            continue
         ctx_lines = []
-        for block in caller.hlil:
-            if block is None:
-                continue
-            for instr in block:
-                if instr.address == ref.address:
-                    ctx_lines.append(f"  >>> {instr.address:#x}: {instr}")
-                elif abs(instr.address - ref.address) < 0x20:
-                    ctx_lines.append(f"  {instr.address:#x}: {instr}")
+        if caller.hlil:
+            for block in caller.hlil:
+                if block is None:
+                    continue
+                for instr in block:
+                    if instr.address == ref.address:
+                        ctx_lines.append(f"  >>> {instr.address:#x}: {instr}")
+                    elif abs(instr.address - ref.address) < 0x20:
+                        ctx_lines.append(f"  {instr.address:#x}: {instr}")
         ctx = "\n".join(ctx_lines[-10:]) if ctx_lines else ""
         callers.append({"name": caller.name, "address": ref.address, "context": ctx})
 
-    callees = [ref.name for ref in func.callees]
+    callees = [c.name for c in func.callees]
 
     string_refs = []
     if func.hlil:

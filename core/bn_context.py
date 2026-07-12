@@ -28,8 +28,8 @@ def get_symbol_table(bv):
 
 
 def get_call_graph(bv, func):
-    callers = [ref.function.name for ref in func.callers]
-    callees = [ref.name for ref in func.callees]
+    callers = [f.name for f in func.callers]
+    callees = [f.name for f in func.callees]
     return {"callers": callers, "callees": callees}
 
 
