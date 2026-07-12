@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Auto Rename",
+  "type": ["helper"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "AI-driven variable and function renaming",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}
