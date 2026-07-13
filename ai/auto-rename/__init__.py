@@ -221,24 +221,24 @@ register_setting(
 )
 
 PluginCommand.register_for_function(
-    "Auto Rename", "Rename function using AI", _rename_current, _is_valid_func
+    "Auto Rename\\Auto Rename", "Rename function using AI", _rename_current, _is_valid_func
 )
 PluginCommand.register_for_address(
-    "Auto Rename (Filtered)",
+    "Auto Rename\\Auto Rename (Filtered)",
     "Rename functions matching a regex pattern",
     _rename_filtered,
 )
 PluginCommand.register_for_range(
-    "Auto Rename (Selection)",
+    "Auto Rename\\Auto Rename (Selection)",
     "Rename selected functions using AI",
     _rename_selection,
     _is_valid_selection,
 )
 PluginCommand.register_for_address(
-    "Auto Rename All", "Rename all auto-named functions using AI", _rename_all
+    "Auto Rename\\Auto Rename All", "Rename all auto-named functions using AI", _rename_all
 )
 PluginCommand.register_for_address(
-    "Auto Rename All (Choose Strategy)",
+    "Auto Rename\\Auto Rename All (Choose Strategy)",
     "Rename all auto-named functions using AI, picking ordering/concurrency for this run only",
     _rename_all_choose_strategy,
 )
