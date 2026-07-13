@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import json
 import re
+import sys
 import threading
 from pathlib import Path
 
@@ -16,6 +17,19 @@ from .ordering import OrderingError
 
 _plugin_dir = Path(__file__).resolve().parent
 logger = get_logger("auto_rename")
+
+
+def _ensure_deps_on_path():
+    """Re-assert .deps/ on sys.path from the calling thread.
+
+    __init__.py already does this at plugin-load time, but langchain_ollama
+    etc. are only imported lazily inside a background rename thread -- make
+    that import site self-sufficient instead of depending on state set up
+    on a different thread at an earlier time.
+    """
+    deps = _plugin_dir / ".deps"
+    if deps.is_dir() and str(deps) not in sys.path:
+        sys.path.insert(0, str(deps))
 
 _VALID_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9:]*(::[a-zA-Z_][a-zA-Z_0-9:]*)*$")
 
@@ -167,6 +181,7 @@ def _is_auto_named(func):
 
 
 def _build_llm(provider_config):
+    _ensure_deps_on_path()
     provider_type = provider_config.get("type", "").lower()
     params = provider_config.get("parameters", {})
 
