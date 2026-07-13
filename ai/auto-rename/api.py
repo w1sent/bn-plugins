@@ -78,7 +78,7 @@ class _AsyncResult:
 
         def _run():
             try:
-                self._results = target()
+                self._results = target(self._set_progress)
                 if self._on_complete:
                     self._on_complete(self._results)
             finally:
@@ -87,6 +87,9 @@ class _AsyncResult:
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
+
+    def _set_progress(self, text):
+        self._task.progress = text
 
     def done(self):
         return self._done.is_set()
@@ -365,7 +368,9 @@ def rename_function(
             f"rename failed for {func.name} at {func.start:#x}: {exc}"
         )
 
-    def _run():
+    def _run(set_progress=None):
+        if set_progress:
+            set_progress(f"Renaming {func.name}...")
         return retry_with_backoff(
             _rename_one,
             args=(bv, func, prompt_template, llm, options),
@@ -425,12 +430,23 @@ def rename_functions(
             f"submission order, so that benefit may be degraded"
         )
 
-    def _run():
+    total = len(ordered_funcs)
+
+    def _run(set_progress=None):
         custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
         ai_config = load_ai_config()
         provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
         llm = _build_llm(provider_config)
         prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
+
+        def _report(done, result=None):
+            if progress:
+                progress(done, total)
+            if set_progress:
+                label = f"Renaming functions ({done}/{total})"
+                if result is not None and result.new_name:
+                    label += f": {result.old_name} -> {result.new_name}"
+                set_progress(label)
 
         if concurrency == "fixed-pool":
             import concurrent.futures
@@ -455,8 +471,7 @@ def rename_functions(
                     except Exception as e:
                         result = RenameResult(address=func.start, old_name=func.name, error=str(e))
                     results.append(result)
-                    if progress:
-                        progress(i + 1, len(ordered_funcs))
+                    _report(i + 1, result)
             return results
 
         results = []
@@ -465,12 +480,11 @@ def rename_functions(
                 break
             result = rename_function(bv, func, provider=provider, options=options)
             results.append(result)
-            if progress:
-                progress(i + 1, len(ordered_funcs))
+            _report(i + 1, result)
         return results
 
     if async_run:
-        return _AsyncResult(bv, funcs, _run, f"Renaming {len(funcs)} functions", on_complete=on_complete)
+        return _AsyncResult(bv, funcs, _run, f"Renaming {total} functions", on_complete=on_complete)
     return _run()
 
 
