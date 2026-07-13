@@ -7,6 +7,7 @@ if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
 from binaryninja import PluginCommand
+from binaryninja.enums import SymbolType
 from binaryninja.interaction import show_message_box, get_choice_input, get_int_input
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -20,10 +21,19 @@ logger = get_logger("auto_rename")
 
 _TAG_TYPE_NAME = "AI Renamed"
 
+_IMPORT_SYMBOL_TYPES = (
+    SymbolType.ImportedFunctionSymbol,
+    SymbolType.ImportAddressSymbol,
+    SymbolType.ExternalSymbol,
+)
+
+
 def _is_auto_named(func):
     name = func.name
+    symbol = func.symbol
+    is_import = symbol is not None and symbol.type in _IMPORT_SYMBOL_TYPES
     return (
-        not func.is_import
+        not is_import
         and not func.is_thunk
         and (
             name.startswith("sub_")
