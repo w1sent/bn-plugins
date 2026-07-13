@@ -83,9 +83,11 @@ def install_plugin(plugin_path, bn_plugin_dir, repo_root, use_link):
     req_file = plugin_path / "requirements.txt"
     if req_file.exists():
         deps_dir = dest / ".deps"
+        if deps_dir.exists():
+            shutil.rmtree(deps_dir)
         deps_dir.mkdir(exist_ok=True)
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-t", str(deps_dir), "-r", str(req_file)],
+            [sys.executable, "-m", "pip", "install", "--upgrade", "-t", str(deps_dir), "-r", str(req_file)],
             check=True,
         )
         print(f"  deps installed -> {deps_dir}")
