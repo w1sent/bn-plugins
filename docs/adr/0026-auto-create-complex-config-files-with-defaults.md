@@ -22,3 +22,12 @@ instead of an empty or absent file. Every future AI plugin with a complex
 config should use `load_or_create_json_config` the same way rather than
 hand-rolling its own load path, so this behavior stays consistent across
 the AI bucket.
+
+The shared `ai-config.json` (provider definitions, ADR-0004) follows the
+same rule via `core.create_json_file_if_missing` — `ai_config.load_ai_config`
+creates it with `DEFAULT_CONFIG` (the local Ollama provider) on first use,
+then applies its own per-provider deep merge on top for existing files,
+since that merge is deeper than the shallow one `load_or_create_json_config`
+does. Any plugin needing a merge deeper than flat top-level keys should
+follow this same split: `create_json_file_if_missing` for creation, custom
+merge logic on top for loading.

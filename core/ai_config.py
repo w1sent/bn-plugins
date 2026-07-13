@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+from .config_file import create_json_file_if_missing
 from .exceptions import AIConfigError
 
 DEFAULT_CONFIG_PATH = Path.home() / ".binaryninja" / "ai-config.json"
@@ -35,8 +36,8 @@ _PROVIDER_ENV_VARS = {
 
 def load_ai_config(path=None):
     path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not path.exists():
-        return DEFAULT_CONFIG
+    if create_json_file_if_missing(path, DEFAULT_CONFIG):
+        return json.loads(json.dumps(DEFAULT_CONFIG))
 
     with open(path) as f:
         user_config = json.load(f)

@@ -116,7 +116,9 @@ Configure in BN's Settings → Hotkeys → Auto Rename.
 ## AI Config
 
 By default, the plugin uses Ollama at `localhost:11434` with `llama3.1:8b`.
-Create `~/.binaryninja/ai-config.json` to configure providers:
+`~/.binaryninja/ai-config.json` is created automatically with these defaults
+the first time a rename runs, if it doesn't already exist. Edit it to
+configure additional providers:
 
 ```json
 {
