@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from .core.ai_config import load_ai_config, resolve_provider
+from .core.config_file import load_or_create_json_config
 from .core.prompts import load_prompt
 from .core.retry import retry_with_backoff
 from .core.logging import get_logger
@@ -17,6 +18,13 @@ from .ordering import OrderingError
 
 _plugin_dir = Path(__file__).resolve().parent
 logger = get_logger("auto_rename")
+
+_DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "auto-rename.json"
+_DEFAULT_PLUGIN_CONFIG = {
+    "custom_prompt": None,
+    "temperature": 0.1,
+    "backoff_steps": [1, 2, 4, 8],
+}
 
 
 def _ensure_deps_on_path():
@@ -239,6 +247,43 @@ def _resolve_scheduling(bv, options):
     return ordering or "default", concurrency or _DEFAULT_CONCURRENCY_MODE, workers or _DEFAULT_CONCURRENCY_WORKERS
 
 
+def _resolve_plugin_config(bv, options):
+    """Load the complex per-plugin config (auto-rename.json by default),
+    creating it with defaults on first use (see ADR-0017). `options`
+    fields, when set, take precedence over the file."""
+    from binaryninja import Settings
+
+    settings = Settings()
+    config_path = settings.get_string("auto_rename.config_path", resource=bv) or str(
+        _DEFAULT_PLUGIN_CONFIG_PATH
+    )
+    try:
+        file_config = load_or_create_json_config(config_path, _DEFAULT_PLUGIN_CONFIG)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"failed to load {config_path}, using defaults: {e}")
+        file_config = dict(_DEFAULT_PLUGIN_CONFIG)
+
+    custom_prompt = (options.custom_prompt if options else None) or file_config.get(
+        "custom_prompt"
+    )
+    temperature = (
+        options.temperature
+        if options and options.temperature is not None
+        else file_config.get("temperature")
+    )
+    backoff_steps = file_config.get("backoff_steps") or _DEFAULT_PLUGIN_CONFIG["backoff_steps"]
+    return custom_prompt, temperature, backoff_steps
+
+
+def _apply_temperature(provider_config, temperature):
+    if temperature is None or provider_config.get("parameters", {}).get("temperature") is not None:
+        return provider_config
+    provider_config = dict(provider_config)
+    provider_config["parameters"] = dict(provider_config.get("parameters", {}))
+    provider_config["parameters"]["temperature"] = temperature
+    return provider_config
+
+
 def _resolve_roots(bv, ordering):
     if ordering == "top-down":
         entry = bv.entry_function
@@ -300,10 +345,11 @@ def rename_function(
 
     Returns RenameResult when sync, _AsyncResult when async_run=True.
     """
+    custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
     ai_config = load_ai_config()
-    provider_config = resolve_provider(ai_config, provider)
+    provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
     llm = _build_llm(provider_config)
-    prompt_template = load_prompt(_plugin_dir, "rename.txt")
+    prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
 
     def _warn(attempt, exc):
         logger.warning(
@@ -319,6 +365,7 @@ def rename_function(
         return retry_with_backoff(
             _rename_one,
             args=(bv, func, prompt_template, llm, options),
+            backoff_steps=backoff_steps,
             on_warning=_warn,
             on_failure=_fail,
         )
@@ -375,10 +422,11 @@ def rename_functions(
         )
 
     def _run():
+        custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
         ai_config = load_ai_config()
-        provider_config = resolve_provider(ai_config, provider)
+        provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
         llm = _build_llm(provider_config)
-        prompt_template = load_prompt(_plugin_dir, "rename.txt")
+        prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
 
         if concurrency == "fixed-pool":
             import concurrent.futures
@@ -386,7 +434,12 @@ def rename_functions(
             results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 future_map = {
-                    pool.submit(retry_with_backoff, _rename_one, args=(bv, f, prompt_template, llm, options)): f
+                    pool.submit(
+                        retry_with_backoff,
+                        _rename_one,
+                        args=(bv, f, prompt_template, llm, options),
+                        backoff_steps=backoff_steps,
+                    ): f
                     for f in ordered_funcs
                 }
                 for i, future in enumerate(concurrent.futures.as_completed(future_map)):

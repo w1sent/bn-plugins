@@ -18,10 +18,34 @@ AI-driven variable and function renaming using LLMs.
 |---|---|---|---|
 | `auto_rename.provider` | string | `""` | Provider name from `ai-config.json`; empty = use default |
 | `auto_rename.mode` | string | `"single"` | Agent mode: `single` (langchain) or `multi` (deepagents) |
-| `auto_rename.config_path` | string | `~/.binaryninja/auto-rename.json` | Path to complex config file |
+| `auto_rename.config_path` | string | `~/.binaryninja/auto-rename.json` | Path to complex config file (auto-created with defaults on first use, see below) |
 | `auto_rename.ordering` | string | `"default"` | Scheduling order for bulk renaming (see below) |
 | `auto_rename.concurrency_mode` | string | `"sequential"` | `sequential` or `fixed-pool` |
 | `auto_rename.concurrency_workers` | int | `3` | Max concurrent LLM calls when `concurrency_mode` is `fixed-pool` |
+
+## Complex config file
+
+The file at `auto_rename.config_path` is created automatically with default
+values the first time a rename runs, if it doesn't already exist:
+
+```json
+{
+  "custom_prompt": null,
+  "temperature": 0.1,
+  "backoff_steps": [1, 2, 4, 8]
+}
+```
+
+| Key | Description |
+|---|---|
+| `custom_prompt` | Raw prompt template text overriding the bundled `prompts/rename.txt`; `null` uses the bundled template |
+| `temperature` | Default LLM temperature, used when the resolved provider (`ai-config.json`) doesn't set its own |
+| `backoff_steps` | Retry delays in seconds for failed rename attempts |
+
+Any `RenameOptions` field passed via the API (`temperature`, `custom_prompt`)
+takes precedence over this file. Keys omitted from an existing file fall
+back to the defaults above, so adding a new default in a future version
+doesn't require editing an existing config by hand.
 
 ## Scheduling strategies
 

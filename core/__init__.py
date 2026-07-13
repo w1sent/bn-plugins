@@ -6,6 +6,7 @@ from .bn_context import (
     get_function_context,
     get_symbol_table,
 )
+from .config_file import load_or_create_json_config
 from .exceptions import AIConfigError, AITimeoutError, PluginError
 from .logging import get_logger, set_log_level
 from .prompts import clear_prompt_cache, load_prompt
