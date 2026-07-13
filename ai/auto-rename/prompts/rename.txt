@@ -5,20 +5,20 @@ Naming convention: Use `namespace::lib::function_name` (C++ STL style), e.g. `cr
 Respond with JSON only:
 {"name": "suggested_name", "reasoning": "brief explanation"}
 
-Function name: {function_name}
-Address: {address:#x}
+Function name: $function_name
+Address: $address
 
 Callers (with callsite context):
-{callers}
+$callers
 
 Called functions:
-{callees}
+$callees
 
 String references:
-{string_refs}
+$string_refs
 
 Data references (hex preview):
-{data_refs}
+$data_refs
 
 Disassembly (HLIL):
-{disassembly}
+$disassembly

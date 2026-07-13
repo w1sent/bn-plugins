@@ -42,6 +42,14 @@ values the first time a rename runs, if it doesn't already exist:
 | `temperature` | Default LLM temperature, used when the resolved provider (`ai-config.json`) doesn't set its own |
 | `backoff_steps` | Retry delays in seconds for failed rename attempts |
 
+Templates (bundled or `custom_prompt`) use `$`-style placeholders (Python
+`string.Template`, e.g. `$function_name`), not `str.format()` `{}` fields —
+this lets the template freely contain literal `{`/`}` (e.g. the example
+JSON output the model is asked to produce) without it being misparsed as a
+format field. Available placeholders: `$function_name`, `$address`,
+`$callers`, `$callees`, `$string_refs`, `$data_refs`, `$disassembly`.
+Unknown/misspelled placeholders are left as-is rather than raising.
+
 Any `RenameOptions` field passed via the API (`temperature`, `custom_prompt`)
 takes precedence over this file. Keys omitted from an existing file fall
 back to the defaults above, so adding a new default in a future version

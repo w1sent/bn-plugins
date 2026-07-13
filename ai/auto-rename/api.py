@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import json
 import re
+import string
 import sys
 import threading
 from pathlib import Path
@@ -159,7 +160,7 @@ def _build_context(bv, func):
 
     return {
         "function_name": func.name,
-        "address": func.start,
+        "address": f"{func.start:#x}",
         "callers": "\n".join(
             f"  {c['name']} at {c['address']:#x}:\n{c['context']}"
             for c in callers
@@ -303,7 +304,10 @@ def _resolve_roots(bv, ordering):
 
 def _rename_one(bv, func, prompt_template, llm, options):
     context = _build_context(bv, func)
-    prompt = prompt_template.format(**context)
+    # $-style substitution, not str.format(): the template's example JSON
+    # output ({"name": ..., "reasoning": ...}) contains literal braces that
+    # str.format() would misparse as format fields.
+    prompt = string.Template(prompt_template).safe_substitute(context)
 
     try:
         response = llm.invoke(prompt)
