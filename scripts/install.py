@@ -69,7 +69,12 @@ def install_plugin(plugin_path, bn_plugin_dir, repo_root, use_link):
             shutil.rmtree(dest)
 
     if use_link:
-        os.symlink(plugin_path.resolve(), dest)
+        dest.mkdir()
+        for entry in plugin_path.iterdir():
+            if entry.name == ".deps":
+                continue
+            os.symlink(entry.resolve(), dest / entry.name)
+        os.symlink((repo_root / "core").resolve(), dest / "core")
         print(f"  linked -> {dest}")
     else:
         shutil.copytree(plugin_path, dest)
