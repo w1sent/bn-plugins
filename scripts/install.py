@@ -92,7 +92,7 @@ def install_plugin(plugin_path, bn_plugin_dir, repo_root, use_link):
             shutil.rmtree(deps_dir)
         deps_dir.mkdir(exist_ok=True)
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "-t", str(deps_dir), "-r", str(req_file)],
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-warn-conflicts", "-t", str(deps_dir), "-r", str(req_file)],
             check=True,
         )
         print(f"  deps installed -> {deps_dir}")
