@@ -8,10 +8,10 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 
 from binaryninja import PluginCommand, TagType
 from binaryninja.interaction import show_message_box, get_choice_input, get_int_input
-from core.logging import get_logger
-from core.settings import register_setting
-from core.tags import create_tag_type, tag_item
-from core.ai_config import load_ai_config, resolve_provider
+from .core.logging import get_logger
+from .core.settings import register_setting
+from .core.tags import create_tag_type, tag_item
+from .core.ai_config import load_ai_config, resolve_provider
 
 from . import api
 from .ordering import ORDERINGS, OrderingError

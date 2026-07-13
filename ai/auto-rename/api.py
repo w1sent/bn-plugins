@@ -5,11 +5,11 @@ import re
 import threading
 from pathlib import Path
 
-from core.ai_config import load_ai_config, resolve_provider
-from core.prompts import load_prompt
-from core.retry import retry_with_backoff
-from core.logging import get_logger
-from core.exceptions import AIConfigError, AITimeoutError
+from .core.ai_config import load_ai_config, resolve_provider
+from .core.prompts import load_prompt
+from .core.retry import retry_with_backoff
+from .core.logging import get_logger
+from .core.exceptions import AIConfigError, AITimeoutError
 
 from . import ordering as ordering_mod
 from .ordering import OrderingError
