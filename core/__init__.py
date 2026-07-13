@@ -19,9 +19,9 @@ def register_setting(key, description, default, scope="user"):
     return _register(key, description, default, scope)
 
 
-def create_tag_type(bv, name, icon="", color=""):
+def create_tag_type(bv, name, icon=""):
     from .tags import create_tag_type as _create
-    return _create(bv, name, icon, color)
+    return _create(bv, name, icon)
 
 
 def tag_item(bv, addr, tag_type_name, data=""):

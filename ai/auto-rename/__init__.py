@@ -6,7 +6,7 @@ _deps = _plugin_dir / ".deps"
 if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
-from binaryninja import PluginCommand, TagType
+from binaryninja import PluginCommand
 from binaryninja.interaction import show_message_box, get_choice_input, get_int_input
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -56,6 +56,11 @@ def _apply_results(bv, results, tag_type):
     show_message_box("Auto Rename", msg)
 
 
+def _function_at(bv, addr):
+    funcs = bv.get_functions_containing(addr)
+    return funcs[0] if funcs else None
+
+
 def _run_rename_batch(bv, funcs, tag_type, title, anchor=None, restrict_to=None, options=None):
     if not funcs:
         show_message_box("Auto Rename", "No auto-named functions found.")
@@ -81,40 +86,36 @@ def _run_rename_batch(bv, funcs, tag_type, title, anchor=None, restrict_to=None,
         show_message_box("Auto Rename", f"This ordering requires a function to be selected: {e}")
 
 
-def _rename_current(bv):
-    func = bv.get_current_function()
-    if not func:
-        show_message_box("Auto Rename", "No function selected.")
-        return
-    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+def _rename_current(bv, func):
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(bv, [func], tag_type, "Renaming function", anchor=func)
 
 
-def _rename_selection(bv):
-    funcs = bv.get_selected_functions()
+def _rename_selection(bv, addr, length):
+    funcs = [f for f in bv.functions if addr <= f.start < addr + length]
     if not funcs:
-        show_message_box("Auto Rename", "No functions selected.")
+        show_message_box("Auto Rename", "No functions in the current selection.")
         return
-    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
         bv,
         funcs,
         tag_type,
         "Renaming selection",
-        anchor=bv.get_current_function(),
+        anchor=_function_at(bv, addr) or funcs[0],
         restrict_to=funcs,
     )
 
 
-def _rename_all(bv):
+def _rename_all(bv, addr):
     auto_named = [f for f in bv.functions if _is_auto_named(f)]
-    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
-        bv, auto_named, tag_type, "Renaming all functions", anchor=bv.get_current_function()
+        bv, auto_named, tag_type, "Renaming all functions", anchor=_function_at(bv, addr)
     )
 
 
-def _rename_filtered(bv):
+def _rename_filtered(bv, addr):
     from binaryninja.interaction import get_text_line_input
 
     pattern = get_text_line_input(
@@ -134,13 +135,13 @@ def _rename_filtered(bv):
         for f in bv.functions
         if _is_auto_named(f) and compiled.match(f.name)
     ]
-    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
-        bv, funcs, tag_type, "Renaming filtered functions", anchor=bv.get_current_function()
+        bv, funcs, tag_type, "Renaming filtered functions", anchor=_function_at(bv, addr)
     )
 
 
-def _rename_all_choose_strategy(bv):
+def _rename_all_choose_strategy(bv, addr):
     ordering_idx = get_choice_input(
         "Ordering strategy:", "Auto Rename All (Choose Strategy)", list(ORDERINGS)
     )
@@ -169,23 +170,23 @@ def _rename_all_choose_strategy(bv):
     )
 
     auto_named = [f for f in bv.functions if _is_auto_named(f)]
-    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="", color="#00cc66")
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
         bv,
         auto_named,
         tag_type,
         "Renaming all functions (custom strategy)",
-        anchor=bv.get_current_function(),
+        anchor=_function_at(bv, addr),
         options=options,
     )
 
 
-def _is_valid_func(bv):
-    return bv.get_current_function() is not None
+def _is_valid_func(bv, func):
+    return func is not None
 
 
-def _is_valid_selection(bv):
-    return len(bv.get_selected_functions()) > 0
+def _is_valid_selection(bv, addr, length):
+    return length > 0
 
 
 register_setting(
@@ -222,22 +223,21 @@ register_setting(
 PluginCommand.register_for_function(
     "Auto Rename", "Rename function using AI", _rename_current, _is_valid_func
 )
-PluginCommand.register_for_function(
+PluginCommand.register_for_address(
     "Auto Rename (Filtered)",
     "Rename functions matching a regex pattern",
     _rename_filtered,
-    _is_valid_func,
 )
-PluginCommand.register_for_selection(
+PluginCommand.register_for_range(
     "Auto Rename (Selection)",
     "Rename selected functions using AI",
     _rename_selection,
     _is_valid_selection,
 )
-PluginCommand.register(
+PluginCommand.register_for_address(
     "Auto Rename All", "Rename all auto-named functions using AI", _rename_all
 )
-PluginCommand.register(
+PluginCommand.register_for_address(
     "Auto Rename All (Choose Strategy)",
     "Rename all auto-named functions using AI, picking ordering/concurrency for this run only",
     _rename_all_choose_strategy,
