@@ -78,7 +78,7 @@ class _AsyncResult:
 
         def _run():
             try:
-                self._results = target(self._set_progress)
+                self._results = target(self._set_progress, self._is_cancelled)
                 if self._on_complete:
                     self._on_complete(self._results)
             finally:
@@ -90,6 +90,9 @@ class _AsyncResult:
 
     def _set_progress(self, text):
         self._task.progress = text
+
+    def _is_cancelled(self):
+        return self._cancel or self._task.cancelled
 
     def done(self):
         return self._done.is_set()
@@ -368,7 +371,7 @@ def rename_function(
             f"rename failed for {func.name} at {func.start:#x}: {exc}"
         )
 
-    def _run(set_progress=None):
+    def _run(set_progress=None, is_cancelled=None):
         if set_progress:
             set_progress(f"Renaming {func.name}...")
         return retry_with_backoff(
@@ -432,12 +435,15 @@ def rename_functions(
 
     total = len(ordered_funcs)
 
-    def _run(set_progress=None):
+    def _run(set_progress=None, is_cancelled=None):
         custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
         ai_config = load_ai_config()
         provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
         llm = _build_llm(provider_config)
         prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
+
+        def _cancelled():
+            return (cancel and cancel()) or (is_cancelled and is_cancelled())
 
         def _report(done, result=None):
             if progress:
@@ -463,7 +469,9 @@ def rename_functions(
                     for f in ordered_funcs
                 }
                 for i, future in enumerate(concurrent.futures.as_completed(future_map)):
-                    if cancel and cancel():
+                    if _cancelled():
+                        for f in future_map:
+                            f.cancel()
                         break
                     func = future_map[future]
                     try:
@@ -476,7 +484,7 @@ def rename_functions(
 
         results = []
         for i, func in enumerate(ordered_funcs):
-            if cancel and cancel():
+            if _cancelled():
                 break
             result = rename_function(bv, func, provider=provider, options=options)
             results.append(result)
