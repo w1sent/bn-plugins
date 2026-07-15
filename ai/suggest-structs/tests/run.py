@@ -6,16 +6,34 @@ API path -- `binaryninja.load()` here just opens an additional BinaryView
 inside the current GUI session, the same as opening a file from the UI.
 
 What it checks, in order (each section prints PASS/FAIL/SKIP and keeps
-going -- one section failing doesn't stop the rest):
-  A. Deterministic skeleton extraction (extract_skeleton) -- no LLM call,
-     always runs.
-  B. Trigger 1 (single mode): suggest_struct() on alloc_node's heap
-     pointer. Requires a reachable AI provider (see ai-config.json).
-  C. Trigger 2 (single mode): suggest_struct_from_range() on g_config.
-  D. Trigger 3 (single mode): the batch candidate scan (_candidate_vars)
-     runs unconditionally (no LLM); actually applying suggestions via
-     suggest_all() only runs if you pass RUN_BATCH_APPLY = True below,
-     since it mutates the loaded binary's types/variables.
+going -- one section failing doesn't stop the rest). LLM calls only happen
+in B and C; everything else is deterministic (no provider needed):
+
+  A. Skeleton extraction (extract_skeleton) on alloc_node's heap pointer.
+  B. Trigger 1 (suggest_struct) on that same pointer -- LLM call.
+  C. Trigger 2 (suggest_struct_from_range) on the g_config global -- LLM
+     call. g_config is NOT inside any function, so this also covers the
+     "no containing function" path (see api._build_range_context).
+  D. Batch candidate scan (_candidate_vars) -- confirms both a named
+     variable and a data_<addr>-named (symbol-stripped) global are found.
+  E. Applies B's suggestion for real via api.apply_definition (the same
+     call __init__.py's preview-accept path makes) and checks the
+     variable's type and a tag actually landed.
+  F. Existing-type reuse/dedup guard: defines a type once via
+     api._apply_definition, then again with the same name, and checks it
+     wasn't redefined -- this is the deterministic guard described in
+     README.md's "existing-type reuse", independent of whether the LLM
+     itself chooses to reuse a type.
+  G. confidence_threshold's effect on the batch candidate scan: a very low
+     threshold should exclude nearly everything, a very high one should
+     include at least as much as the default.
+  H. Applies a hand-written struct directly to a global via the
+     `data_addr` path (bypassing the LLM) and checks it landed as a value
+     type on that data variable, distinct from E's pointer-to-var case.
+  I. suggest_all() (the actual batch command's underlying call) -- runs
+     unconditionally by default now that A-H are known-good (see
+     RUN_BATCH_APPLY below to opt back out; it mutates the loaded bv,
+     which is an in-memory testcase binary, not anything of yours).
 
 Before running: build the test binary once --
     python testcases/struct-node/build.py
@@ -33,7 +51,7 @@ import binaryninja
 # skip the (mutating) batch-apply section, or point at a different binary.
 # ---------------------------------------------------------------------
 FORCE_MODE = "single"   # "single" or "multi" -- single is faster/cheaper for a smoke test
-RUN_BATCH_APPLY = False  # True runs suggest_all() for real (mutates the loaded bv)
+RUN_BATCH_APPLY = True  # False skips section I (suggest_all actually applying)
 
 _HERE = Path(__file__).resolve()
 _PLUGIN_DIR = _HERE.parent.parent               # ai/suggest-structs
@@ -96,29 +114,33 @@ def main():
     bv.update_analysis_and_wait()
     print(f"Loaded, {len(list(bv.functions))} functions analyzed.\n")
 
+    tag_type = bv.create_tag_type("AI Struct (test)", "")
+
     # -- A. deterministic skeleton extraction (no LLM) ------------------
     print("-- A. skeleton extraction (extract_skeleton) --")
+    func, target_var = None, None
     try:
         alloc_funcs = [f for f in bv.functions if f.name == "alloc_node"]
         if not alloc_funcs:
             _report("FAIL", "A: find alloc_node", "function not found -- did the binary build correctly?")
-            func, target_var = None, None
         else:
             func = alloc_funcs[0]
             candidates = [v for v in func.hlil.vars if "*" in str(v.type)] if func.hlil else []
+            print(f"  pointer-typed HLIL vars in alloc_node: {[(v.name, str(v.type)) for v in candidates]}")
+            for v in candidates:
+                sk = api.extract_skeleton(bv, func, v)
+                print(f"    {v.name}: offsets {[hex(f.offset) for f in sk]}")
+
             best = max(candidates, key=lambda v: len(api.extract_skeleton(bv, func, v)), default=None)
             if best is None:
                 _report("FAIL", "A: find candidate pointer var in alloc_node", "no pointer-typed HLIL var found")
-                target_var = None
             else:
                 skeleton = api.extract_skeleton(bv, func, best)
                 offsets = sorted(f.offset for f in skeleton)
                 print(f"  variable: {best.name}, offsets found: {[hex(o) for o in offsets]}")
                 # We wrote *(int*)(p+0), *(int*)(p+4), memcpy(p+8, ...), *(void**)(p+24).
-                # memcpy doesn't produce a DEREF_FIELD/ARRAY_INDEX BN can see as an
-                # offset access, so we only expect 0x0, 0x4, 0x18 to reliably show up
-                # -- treat this as informational rather than a strict assertion, since
-                # decompiler output varies by BN version/optimization.
+                # memcpy doesn't produce a matchable offset access, so we only expect
+                # 0x0, 0x4, 0x18 to reliably show up.
                 expected = {0x0, 0x4, 0x18}
                 found = expected & set(offsets)
                 if found:
@@ -128,60 +150,66 @@ def main():
                 target_var = best
     except Exception as e:
         _report("FAIL", "A: skeleton extraction", f"{e}\n{traceback.format_exc()}")
-        func, target_var = None, None
 
     # -- B. trigger 1: suggest_struct (single mode) ----------------------
     print("\n-- B. trigger 1: suggest_struct (single mode) --")
+    b_result = None
     if func is None or target_var is None:
         _report("SKIP", "B: suggest_struct", "no target variable from section A")
     else:
         try:
             options = api.StructOptions(mode=FORCE_MODE)
-            result = api.suggest_struct(bv, func.start, var_name=target_var.name, options=options)
-            if result.error:
-                _report("FAIL", "B: suggest_struct", result.error)
-            elif not result.definition:
+            b_result = api.suggest_struct(bv, func.start, var_name=target_var.name, options=options)
+            if b_result.error:
+                _report("FAIL", "B: suggest_struct", b_result.error)
+                b_result = None
+            elif not b_result.definition:
                 _report("FAIL", "B: suggest_struct", "no definition returned")
+                b_result = None
             else:
-                print(f"  proposed definition:\n{result.definition}\n")
-                parsed = bv.parse_types_from_string(result.definition)
+                print(f"  proposed definition:\n{b_result.definition}\n")
+                parsed = bv.parse_types_from_string(b_result.definition)
                 if parsed.types:
                     _report("PASS", "B: suggest_struct", f"parsed {len(parsed.types)} type(s)")
                 else:
                     _report("FAIL", "B: suggest_struct", "LLM output didn't parse into any struct")
+                    b_result = None
         except Exception as e:
             _report("FAIL", "B: suggest_struct", f"{e} -- is a provider configured in ai-config.json?")
 
     # -- C. trigger 2: suggest_struct_from_range (single mode) -----------
     print("\n-- C. trigger 2: suggest_struct_from_range (single mode) --")
+    c_result, g_config_addr = None, None
     try:
         g_config_syms = bv.get_symbols_by_name("g_config")
         if not g_config_syms:
             _report("FAIL", "C: find g_config", "symbol not found")
         else:
-            addr = g_config_syms[0].address
+            g_config_addr = g_config_syms[0].address
             options = api.StructOptions(mode=FORCE_MODE)
-            result = api.suggest_struct_from_range(bv, addr, 16, options=options)
-            if result.error:
-                _report("FAIL", "C: suggest_struct_from_range", result.error)
-            elif not result.definition:
+            c_result = api.suggest_struct_from_range(bv, g_config_addr, 16, options=options)
+            if c_result.error:
+                _report("FAIL", "C: suggest_struct_from_range", c_result.error)
+                c_result = None
+            elif not c_result.definition:
                 _report("FAIL", "C: suggest_struct_from_range", "no definition returned")
+                c_result = None
             else:
-                print(f"  proposed definition:\n{result.definition}\n")
+                print(f"  proposed definition:\n{c_result.definition}\n")
                 _report("PASS", "C: suggest_struct_from_range", "")
     except Exception as e:
         _report("FAIL", "C: suggest_struct_from_range", f"{e} -- is a provider configured in ai-config.json?")
 
-    # -- D. trigger 3: batch candidate scan (no LLM) + optional apply ---
+    # -- D. trigger 3: batch candidate scan (no LLM) ---------------------
     print("\n-- D. trigger 3: batch candidate scan (_candidate_vars) --")
     try:
         threshold, _max_steps, _max_structs = api._resolve_bn_settings(bv, api.StructOptions())
         candidates = api._candidate_vars(bv, threshold)
         names = [(hex(a), v) for a, v in candidates]
         print(f"  candidates found: {names}")
-        has_scratch_global = any(v is None for _a, v in candidates)
-        has_alloc_var = any(v is not None for _a, v in candidates)
-        if has_scratch_global and has_alloc_var:
+        has_global = any(v is None for _a, v in candidates)
+        has_var = any(v is not None for _a, v in candidates)
+        if has_global and has_var:
             _report("PASS", "D: candidate scan", "found both a global (data_<addr>) and a variable candidate")
         else:
             _report(
@@ -191,25 +219,127 @@ def main():
     except Exception as e:
         _report("FAIL", "D: candidate scan", f"{e}\n{traceback.format_exc()}")
 
-    if RUN_BATCH_APPLY:
-        print("\n-- D2. trigger 3: suggest_all (mutates bv) --")
+    # -- E. apply_definition end-to-end (the preview-accept code path) --
+    print("\n-- E. apply_definition (preview-accept path) --")
+    if b_result is None or func is None or target_var is None:
+        _report("SKIP", "E: apply_definition", "no unapplied definition from section B")
+    else:
+        try:
+            applied = api.apply_definition(bv, func, target_var, b_result.definition, tag_type)
+            if applied.error:
+                _report("FAIL", "E: apply_definition", applied.error)
+            else:
+                # create_user_var() queues a re-analysis rather than updating
+                # func.hlil.vars synchronously -- wait for it, and re-fetch
+                # `func` too, before reading the variable's type back.
+                bv.update_analysis_and_wait()
+                fresh_funcs = bv.get_functions_containing(func.start)
+                fresh_func = fresh_funcs[0] if fresh_funcs else func
+                refreshed = api._hlil_var_for(fresh_func, target_var.name)
+                new_type = str(refreshed.type) if refreshed is not None else "?"
+                tags = bv.get_tags_at(func.start)
+                print(f"  {target_var.name} type is now: {new_type}")
+                print(f"  tags at {func.start:#x}: {[(t.type.name, t.data) for t in tags]}")
+                is_struct_ptr = "*" in new_type and applied.struct_name and str(applied.struct_name) in new_type
+                has_tag = any(t.type.name == tag_type.name for t in tags)
+                if is_struct_ptr and has_tag:
+                    _report("PASS", "E: apply_definition", f"{target_var.name} -> {new_type}, tagged")
+                else:
+                    _report(
+                        "FAIL", "E: apply_definition",
+                        f"type={new_type!r} struct_name={applied.struct_name!r} tagged={has_tag}",
+                    )
+        except Exception as e:
+            _report("FAIL", "E: apply_definition", f"{e}\n{traceback.format_exc()}")
+
+    # -- F. existing-type reuse/dedup guard (no LLM) ---------------------
+    print("\n-- F. existing-type reuse/dedup guard --")
+    try:
+        dedup_name = "SuggestStructsTestDedup"
+        before = sum(1 for n in bv.type_names if str(n) == dedup_name)
+        name1, applied1, err1 = api._apply_definition(
+            bv, None, None, f"struct {dedup_name} {{ int32_t a; }};", None,
+        )
+        mid = sum(1 for n in bv.type_names if str(n) == dedup_name)
+        name2, applied2, err2 = api._apply_definition(
+            bv, None, None, f"struct {dedup_name} {{ int32_t a; }};", None,
+        )
+        after = sum(1 for n in bv.type_names if str(n) == dedup_name)
+        print(f"  {dedup_name} count: before={before} after 1st define={mid} after 2nd define={after}")
+        if err1 or err2:
+            _report("FAIL", "F: dedup guard", f"err1={err1} err2={err2}")
+        elif before == 0 and mid == 1 and after == 1:
+            _report("PASS", "F: dedup guard", "second definition reused instead of duplicating")
+        else:
+            _report("FAIL", "F: dedup guard", f"expected 0/1/1, got {before}/{mid}/{after}")
+    except Exception as e:
+        _report("FAIL", "F: dedup guard", f"{e}\n{traceback.format_exc()}")
+
+    # -- G. confidence_threshold's effect on the candidate scan ----------
+    print("\n-- G. confidence_threshold effect on batch scan --")
+    try:
+        low = api._candidate_vars(bv, 0)
+        default_threshold, _, _ = api._resolve_bn_settings(bv, api.StructOptions())
+        default = api._candidate_vars(bv, default_threshold)
+        high = api._candidate_vars(bv, 300)
+        print(f"  candidate counts -- threshold=0: {len(low)}, default({default_threshold}): {len(default)}, threshold=300: {len(high)}")
+        if len(low) <= len(default) <= len(high):
+            _report("PASS", "G: confidence_threshold", f"{len(low)} <= {len(default)} <= {len(high)}")
+        else:
+            _report("FAIL", "G: confidence_threshold", f"not monotonic: {len(low)}, {len(default)}, {len(high)}")
+    except Exception as e:
+        _report("FAIL", "G: confidence_threshold", f"{e}\n{traceback.format_exc()}")
+
+    # -- H. apply to a global via the data_addr path (no LLM) ------------
+    print("\n-- H. apply_definition on a global (data_addr path) --")
+    if g_config_addr is None:
+        _report("SKIP", "H: data_addr apply", "g_config not found (section C)")
+    else:
+        try:
+            struct_name, applied, error = api._apply_definition(
+                bv, None, None,
+                "struct HandWrittenConfig { uint32_t magic; uint16_t version; uint16_t flags; char tag[8]; };",
+                tag_type, data_addr=g_config_addr,
+            )
+            data_var = bv.get_data_var_at(g_config_addr)
+            new_type = str(data_var.type) if data_var is not None else "?"
+            tags = bv.get_tags_at(g_config_addr)
+            has_tag = any(t.type.name == tag_type.name for t in tags)
+            print(f"  g_config type is now: {new_type}, tagged={has_tag}")
+            if error:
+                _report("FAIL", "H: data_addr apply", error)
+            elif "HandWrittenConfig" in new_type and has_tag:
+                _report("PASS", "H: data_addr apply", f"g_config -> {new_type}, tagged")
+            else:
+                _report("FAIL", "H: data_addr apply", f"type={new_type!r} tagged={has_tag}")
+        except Exception as e:
+            _report("FAIL", "H: data_addr apply", f"{e}\n{traceback.format_exc()}")
+
+    # -- I. suggest_all (the real batch command's call), mutates bv ------
+    print("\n-- I. suggest_all (batch apply) --")
+    if not RUN_BATCH_APPLY:
+        _report("SKIP", "I: suggest_all", "RUN_BATCH_APPLY is False")
+    else:
         try:
             options = api.StructOptions(mode=FORCE_MODE)
-            results = api.suggest_all(bv, options=options)
+            results = api.suggest_all(bv, options=options, tag_type_name=tag_type)
             applied = sum(1 for r in results if r.applied)
             failed = sum(1 for r in results if r.error)
             print(f"  {len(results)} candidate(s): {applied} applied, {failed} failed")
             for r in results:
                 tag = "applied" if r.applied else ("error" if r.error else "unapplied")
                 print(f"    [{tag}] {r.address:#x} {r.var_name or ''} -> {r.struct_name or r.error}")
-            if applied > 0:
-                _report("PASS", "D2: suggest_all", f"{applied} applied")
+            if len(results) == 0:
+                _report(
+                    "PASS", "I: suggest_all",
+                    "no remaining candidates -- expected, E/F/H already typed alloc_node's var and g_config",
+                )
+            elif applied > 0:
+                _report("PASS", "I: suggest_all", f"{applied}/{len(results)} applied")
             else:
-                _report("FAIL", "D2: suggest_all", "nothing applied")
+                _report("FAIL", "I: suggest_all", f"{len(results)} candidate(s), none applied")
         except Exception as e:
-            _report("FAIL", "D2: suggest_all", f"{e}\n{traceback.format_exc()}")
-    else:
-        _report("SKIP", "D2: suggest_all", "RUN_BATCH_APPLY is False")
+            _report("FAIL", "I: suggest_all", f"{e}\n{traceback.format_exc()}")
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed, {len(_SKIP)} skipped.")
 

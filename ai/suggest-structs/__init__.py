@@ -22,31 +22,54 @@ _TAG_TYPE_NAME = "AI Struct"
 
 
 def _hlil_var_at(bv, addr):
-    """Best-effort: the pointer-typed HLIL variable whose def/use is
-    closest to `addr` in its containing function, for is_valid gating and
-    to resolve which variable "Suggest Struct" targets."""
+    """Best-effort: the pointer-typed HLIL variable whose use is closest to
+    `addr` in its containing function, for is_valid gating and to resolve
+    which variable "Suggest Struct" targets.
+
+    Candidates come from `func.hlil.vars` -- the same canonical list
+    api.py's `_hlil_var_for` searches by name -- and are only matched via
+    real HLIL_VAR usage sites (found by traversing every subexpression,
+    not just top-level statements). An earlier version instead grabbed
+    whatever object had a `.var` attribute on each top-level statement
+    (mostly HLIL_VAR_DECLARE nodes); that variable's name wasn't always
+    resolvable back through `func.hlil.vars`, causing "Suggest Struct" to
+    fail with "no HLIL variable named ..." even when a pointer variable
+    was genuinely near the cursor.
+    """
+    from binaryninja.highlevelil import HighLevelILOperation
+
     funcs = bv.get_functions_containing(addr)
     if not funcs:
         return None, None
     func = funcs[0]
     if not func.hlil:
         return func, None
-    best = None
+
+    canonical = {v.name: v for v in func.hlil.vars if v.type is not None and "*" in str(v.type)}
+    if not canonical:
+        return func, None
+
+    best_name = None
     best_dist = None
     for block in func.hlil:
         if block is None:
             continue
         for instr in block:
-            var = getattr(instr, "var", None) if hasattr(instr, "var") else None
-            if var is None:
-                continue
-            t = var.type
-            if t is None or "*" not in str(t):
-                continue
-            dist = abs(instr.address - addr)
-            if best_dist is None or dist < best_dist:
-                best, best_dist = var, dist
-    return func, best
+            for expr in instr.traverse(lambda e: e, shallow=False):
+                if expr is None:
+                    continue
+                if getattr(expr, "operation", None) != HighLevelILOperation.HLIL_VAR:
+                    continue
+                v = getattr(expr, "var", None)
+                if v is None or v.name not in canonical:
+                    continue
+                dist = abs(instr.address - addr)
+                if best_dist is None or dist < best_dist:
+                    best_name, best_dist = v.name, dist
+
+    if best_name is None:
+        return func, None
+    return func, canonical[best_name]
 
 
 def _apply_results(bv, results, tag_type_name):

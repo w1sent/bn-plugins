@@ -130,6 +130,35 @@ def _hlil_var_for(func, var_name):
     return None
 
 
+def _var_offset_from_address_expr(expr, var_name):
+    """If `expr` (an HLIL_DEREF's address operand) is `var` or a
+    `var + const` / `const + var` add, return the offset; else None.
+
+    This is the common case for a pointer with no struct type yet: BN
+    represents `*(int32_t*)(p + 4)` as HLIL_DEREF(HLIL_ADD(HLIL_VAR(p),
+    HLIL_CONST(4))), NOT HLIL_DEREF_FIELD -- that operation only appears
+    once BN (or the user) already has a struct/array type on the pointer,
+    which is exactly what suggest-structs is trying to produce in the
+    first place."""
+    from binaryninja.highlevelil import HighLevelILOperation
+
+    op = getattr(expr, "operation", None)
+    if op == HighLevelILOperation.HLIL_VAR:
+        v = getattr(expr, "var", None)
+        if v is not None and v.name == var_name:
+            return 0
+        return None
+    if op == HighLevelILOperation.HLIL_ADD:
+        left, right = expr.left, expr.right
+        for a, b in ((left, right), (right, left)):
+            a_op = getattr(a, "operation", None)
+            a_var = getattr(a, "var", None) if a_op == HighLevelILOperation.HLIL_VAR else None
+            b_const = getattr(b, "constant", None)
+            if a_var is not None and a_var.name == var_name and isinstance(b_const, int):
+                return b_const
+    return None
+
+
 def extract_skeleton(bv, func, var):
     """Deterministically walk `var`'s HLIL uses to build an advisory list
     of (offset, size, type) fields from real offset accesses. Best-effort:
@@ -146,22 +175,46 @@ def extract_skeleton(bv, func, var):
         for instr in block:
             # shallow=False: without it, traverse() only visits top-level
             # operands of `instr` and misses offset accesses nested inside
-            # compound expressions (e.g. `foo->bar->baz`).
-            for expr in instr.traverse(lambda e: [e], shallow=False):
+            # compound expressions (e.g. `foo->bar->baz`). The callback
+            # must return the node itself (or None to skip it) -- traverse()
+            # yields whatever the callback returns *directly*, it does not
+            # flatten a list return, so `lambda e: [e]` (an earlier version
+            # of this code) silently yielded one-element lists instead of
+            # instructions and never matched anything.
+            for expr in instr.traverse(lambda e: e, shallow=False):
                 if expr is None:
                     continue
                 op = getattr(expr, "operation", None)
-                if op not in (
-                    HighLevelILOperation.HLIL_DEREF_FIELD,
-                    HighLevelILOperation.HLIL_ARRAY_INDEX,
-                ):
+
+                if op == HighLevelILOperation.HLIL_DEREF:
+                    offset = _var_offset_from_address_expr(expr.src, var.name)
+                    if offset is None:
+                        continue
+                    size = getattr(expr, "size", 0) or bv.address_size
+                elif op == HighLevelILOperation.HLIL_DEREF_FIELD:
+                    src = getattr(expr, "src", None)
+                    src_var = getattr(src, "var", None)
+                    if src_var is None or src_var.name != var.name:
+                        continue
+                    offset = getattr(expr, "offset", 0) or 0
+                    size = getattr(expr, "size", 0) or bv.address_size
+                elif op == HighLevelILOperation.HLIL_ARRAY_INDEX:
+                    # HLIL_ARRAY_INDEX has no `.offset` -- `result[1]` means
+                    # "the 2nd element of whatever result points to", so the
+                    # byte offset is index * element_size, not index itself.
+                    src = getattr(expr, "src", None)
+                    src_var = getattr(src, "var", None)
+                    if src_var is None or src_var.name != var.name:
+                        continue
+                    index_expr = getattr(expr, "index", None)
+                    index_const = getattr(index_expr, "constant", None)
+                    if not isinstance(index_const, int):
+                        continue
+                    size = getattr(expr, "size", 0) or bv.address_size
+                    offset = index_const * size
+                else:
                     continue
-                src = getattr(expr, "src", None)
-                src_var = getattr(src, "var", None)
-                if src_var is None or src_var.name != var.name:
-                    continue
-                offset = getattr(expr, "offset", 0) or 0
-                size = getattr(expr, "size", 0) or bv.address_size
+
                 c_type = str(expr.expr_type) if getattr(expr, "expr_type", None) else "unknown"
                 key = offset
                 if key not in fields or fields[key].size < size:
@@ -219,6 +272,38 @@ def _build_var_context(bv, func, var, skeleton):
         "string_refs": "\n".join(string_refs) or "(none)",
         "data_refs": "\n".join(data_refs) or "(none)",
         "disassembly": disassembly,
+        "existing_types": existing_types,
+    }
+
+
+def _build_range_context(bv, start, length, skeleton):
+    """Context for trigger 2 when `start` isn't inside any function --
+    the common case for a global/static blob, or any address selected
+    outside code. No HLIL/function to pull disassembly or string/data
+    refs *from*; instead this looks at what points *at* the range."""
+    data = bv.read(start, length) or b""
+    hex_preview = " ".join(f"{b:02x}" for b in data) or "(unreadable)"
+
+    ref_lines = []
+    for ref in list(bv.get_code_refs(start))[:20]:
+        ref_func = getattr(ref, "function", None)
+        ref_lines.append(f"  code ref from {ref_func.name if ref_func else '?'} at {ref.address:#x}")
+    for ref_addr in list(bv.get_data_refs(start))[:20]:
+        ref_lines.append(f"  data ref from {ref_addr:#x}")
+
+    sym = bv.get_symbol_at(start)
+    existing_types = "\n".join(
+        f"  {name}" for name in list(bv.type_names)[:200]
+    ) or "(none)"
+
+    return {
+        "function_name": "(none -- raw memory region, not inside any function)",
+        "address": f"{start:#x}",
+        "var_name": sym.name if sym else "(range)",
+        "skeleton": _skeleton_to_text(skeleton),
+        "string_refs": "(n/a -- no containing function to scan)",
+        "data_refs": "\n".join(ref_lines) or "(none found pointing at this range)",
+        "disassembly": f"raw bytes at {start:#x} (length {length}): {hex_preview}",
         "existing_types": existing_types,
     }
 
@@ -390,8 +475,11 @@ def _apply_definition(bv, func, var, definition, tag_type_name, data_addr=None):
     return struct_name, True, None
 
 
-def _single_mode_suggest(bv, func, var, skeleton, prompt_template, llm):
-    context = _build_var_context(bv, func, var, skeleton)
+def _single_mode_suggest(bv, func, var, skeleton, prompt_template, llm, start=None, length=None):
+    if func is not None:
+        context = _build_var_context(bv, func, var, skeleton)
+    else:
+        context = _build_range_context(bv, start, length, skeleton)
     # $-style substitution, not str.format(): C struct examples in the
     # template contain literal braces that str.format() would misparse.
     prompt = string.Template(prompt_template).safe_substitute(context)
@@ -540,12 +628,17 @@ def suggest_struct_from_range(
         if set_progress:
             set_progress(f"Seeding struct for range {start:#x}+{length:#x}...")
         seed = SkeletonField(offset=0, size=length, c_type=f"uint8_t[{length}]", note="range seed")
+        # `func` is optional here, unlike trigger 1: the whole point of a
+        # range-based suggestion is to cover addresses with no containing
+        # function -- globals, .data/.bss blobs, anything selected outside
+        # code. When present it's used for richer context (real HLIL,
+        # string/data refs); when absent, _build_range_context (called via
+        # _single_mode_suggest / run_agent_session) covers the target with
+        # just its raw bytes and inbound references instead.
         func = None
         funcs = bv.get_functions_containing(start)
         if funcs:
             func = funcs[0]
-        if func is None:
-            return StructResult(address=start, error="no function containing range start")
 
         custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
         ai_config = load_ai_config()
@@ -560,6 +653,7 @@ def suggest_struct_from_range(
                 bv, func, None, [seed], provider_config=provider_config,
                 custom_prompt=custom_prompt, max_steps=max_steps,
                 max_structs=max_structs, tag_type_name=tag_type_name,
+                start=start,
             )
             if error:
                 return StructResult(address=start, error=error)
@@ -574,7 +668,7 @@ def suggest_struct_from_range(
         prompt_template = custom_prompt or load_prompt(_plugin_dir, "suggest_struct.txt")
         definition = retry_with_backoff(
             _single_mode_suggest,
-            args=(bv, func, None, [seed], prompt_template, llm),
+            args=(bv, func, None, [seed], prompt_template, llm, start, length),
             backoff_steps=backoff_steps,
         )
         return StructResult(address=start, definition=definition, applied=False)

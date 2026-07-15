@@ -22,6 +22,7 @@ from .core.tags import tag_item
 from .api import (
     SkeletonField,
     _build_var_context,
+    _build_range_context,
     _skeleton_to_text,
     extract_skeleton,
     _hlil_var_for,
@@ -221,10 +222,15 @@ def _build_tools(state, max_structs):
 
 def run_agent_session(
     bv, func, var, skeleton, *, provider_config, custom_prompt,
-    max_steps, max_structs, tag_type_name,
+    max_steps, max_structs, tag_type_name, start=None,
 ):
     """Run one multi-mode agent session targeting `var` (or a range seed
     when `var` is None, per `skeleton`). Mutates `bv` live via tools.
+
+    `func` may be None -- trigger 2 (range-seeded) targets are often
+    outside any function (globals, .data/.bss blobs); `start` (the raw
+    address) is used for context/logging in that case instead of
+    `func.start`.
 
     Returns (definition_text, applied_struct_names, error). `error` is set
     (and the caller must not commit its undo boundary) if the agent never
@@ -241,7 +247,10 @@ def run_agent_session(
     llm = _build_agent_llm(provider_config)
 
     system_prompt = custom_prompt or load_prompt(_plugin_dir, "agent_system.txt")
-    ctx = _build_var_context(bv, func, var, skeleton)
+    if func is not None:
+        ctx = _build_var_context(bv, func, var, skeleton)
+    else:
+        ctx = _build_range_context(bv, start, skeleton[0].size if skeleton else 0, skeleton)
     task = string.Template(load_prompt(_plugin_dir, "agent_task.txt")).safe_substitute(ctx)
 
     agent = create_deep_agent(model=llm, tools=tools, system_prompt=system_prompt)
@@ -252,6 +261,7 @@ def run_agent_session(
     # every edit the agent made this session (full rollback, see TODO.md).
     undo_id = bv.begin_undo_actions()
     error = None
+    target_addr = func.start if func is not None else start
     try:
         agent.invoke(
             {"messages": [{"role": "user", "content": task}]},
@@ -260,7 +270,7 @@ def run_agent_session(
     except GraphRecursionError:
         error = f"agent exceeded step budget ({max_steps}) without calling confirm_edits"
     except Exception as e:
-        logger.error(f"agent session failed for {var.name if var else '(range)'} at {func.start:#x}: {e}")
+        logger.error(f"agent session failed for {var.name if var else '(range)'} at {target_addr:#x}: {e}")
         error = str(e)
 
     if error is None and not state.confirmed:
