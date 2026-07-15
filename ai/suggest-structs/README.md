@@ -134,3 +134,20 @@ Suggest Structs.
 
 Shared with other AI plugins — see `~/.binaryninja/ai-config.json`
 (auto-created with an Ollama default on first use by any AI plugin).
+
+## Testing
+
+`tests/run.py` runs inside Binary Ninja's GUI (Tools > Run Script, or paste
+into the Python console) against the `testcases/struct-node` test binary —
+not a headless script, per ADR-0009. Build the binary once, then run the
+script from inside BN:
+
+```
+python testcases/struct-node/build.py
+```
+
+The script exercises deterministic skeleton extraction unconditionally (no
+LLM needed), then trigger 1/2/3 against whatever provider your
+`ai-config.json` resolves to by default. See `tests/run.py`'s module
+docstring for exactly what each section checks and how to enable the
+(mutating) batch-apply section.
