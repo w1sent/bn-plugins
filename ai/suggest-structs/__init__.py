@@ -203,6 +203,11 @@ register_setting(
     "Cap on submit_struct calls per multi-mode agent session",
     8,
 )
+register_setting(
+    "suggest_structs.debug_logging",
+    "Log every LLM request (timestamp, plugin, provider/model, prompt) to ~/.binaryninja/llm-request.log",
+    False,
+)
 
 PluginCommand.register_for_address(
     "Suggest Structs\\Suggest Struct",

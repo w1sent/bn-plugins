@@ -116,6 +116,16 @@ interactive/correctable surface instead.
 | `suggest_structs.confidence_threshold` | int | `255` | `Type.confidence` at/above which a variable is skipped as already-typed during batch sweep |
 | `suggest_structs.agent_max_steps` | int | `12` | Multi-mode agent tool-call budget per session |
 | `suggest_structs.agent_max_structs_per_session` | int | `8` | Cap on `submit_struct` calls per multi-mode session |
+| `suggest_structs.debug_logging` | bool | `false` | Log every LLM request (timestamp, plugin, provider/model, prompt) to `~/.binaryninja/llm-request.log` |
+
+`debug_logging` covers both modes: single mode logs its one-shot request
+directly; multi mode logs every internal call the agent makes across its
+session (not just the first), via a LangChain callback rather than
+wrapping the model object -- deepagents' tool-binding returns a new model
+instance internally, which would silently bypass a plain wrapper after the
+first call. The log file (`core/llm_debug.py`) is shared infrastructure,
+so other AI plugins can opt into the same log by registering their own
+`<plugin>.debug_logging` setting and calling into it the same way.
 
 ## Complex config file
 

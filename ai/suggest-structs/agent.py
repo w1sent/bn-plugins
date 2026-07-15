@@ -30,6 +30,7 @@ from .api import (
 
 _plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("suggest_structs")
+_PLUGIN_NAME = "suggest_structs"
 
 
 def _ensure_deps_on_path():
@@ -222,7 +223,7 @@ def _build_tools(state, max_structs):
 
 def run_agent_session(
     bv, func, var, skeleton, *, provider_config, custom_prompt,
-    max_steps, max_structs, tag_type_name, start=None,
+    max_steps, max_structs, tag_type_name, start=None, debug=False,
 ):
     """Run one multi-mode agent session targeting `var` (or a range seed
     when `var` is None, per `skeleton`). Mutates `bv` live via tools.
@@ -262,10 +263,24 @@ def run_agent_session(
     undo_id = bv.begin_undo_actions()
     error = None
     target_addr = func.start if func is not None else start
+    invoke_config = {"recursion_limit": max_steps * 2}
+    if debug:
+        from .core import llm_debug
+
+        # Registered as a callback rather than wrapping `llm` itself:
+        # deepagents/langgraph tool-binding returns a *new* model instance
+        # internally, which would silently bypass a wrapper around the
+        # original `llm` object for every call after the first. Callbacks
+        # propagate through the whole run tree regardless, so this is the
+        # only way to see every one of the agent's internal LLM calls
+        # across its multi-step session, not just the initial task prompt.
+        cb = llm_debug.make_callback(_PLUGIN_NAME, provider_config)
+        if cb is not None:
+            invoke_config["callbacks"] = [cb]
     try:
         agent.invoke(
             {"messages": [{"role": "user", "content": task}]},
-            config={"recursion_limit": max_steps * 2},
+            config=invoke_config,
         )
     except GraphRecursionError:
         error = f"agent exceeded step budget ({max_steps}) without calling confirm_edits"

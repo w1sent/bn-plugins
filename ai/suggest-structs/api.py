@@ -13,9 +13,15 @@ from .core.prompts import load_prompt
 from .core.retry import retry_with_backoff
 from .core.logging import get_logger
 from .core.exceptions import AIConfigError, AITimeoutError
+from .core import llm_debug
 
 _plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("suggest_structs")
+_PLUGIN_NAME = "suggest_structs"
+
+
+def _debug_logging_enabled(bv):
+    return llm_debug.is_enabled("suggest_structs.debug_logging", bv)
 
 _DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "suggest-structs.json"
 _DEFAULT_PLUGIN_CONFIG = {
@@ -475,7 +481,10 @@ def _apply_definition(bv, func, var, definition, tag_type_name, data_addr=None):
     return struct_name, True, None
 
 
-def _single_mode_suggest(bv, func, var, skeleton, prompt_template, llm, start=None, length=None):
+def _single_mode_suggest(
+    bv, func, var, skeleton, prompt_template, llm, start=None, length=None,
+    provider_config=None, debug=False,
+):
     if func is not None:
         context = _build_var_context(bv, func, var, skeleton)
     else:
@@ -483,6 +492,8 @@ def _single_mode_suggest(bv, func, var, skeleton, prompt_template, llm, start=No
     # $-style substitution, not str.format(): C struct examples in the
     # template contain literal braces that str.format() would misparse.
     prompt = string.Template(prompt_template).safe_substitute(context)
+    if debug:
+        llm_debug.log_request(_PLUGIN_NAME, provider_config, prompt)
     response = llm.invoke(prompt)
     content = response.content.strip()
     if content.startswith("```"):
@@ -542,6 +553,7 @@ def _suggest_one(bv, addr, var_name, *, provider, options, tag_type_name):
                 max_steps=max_steps,
                 max_structs=max_structs,
                 tag_type_name=tag_type_name,
+                debug=_debug_logging_enabled(bv),
             )
             if error:
                 return StructResult(address=addr, var_name=var_name, error=error)
@@ -557,7 +569,7 @@ def _suggest_one(bv, addr, var_name, *, provider, options, tag_type_name):
         prompt_template = custom_prompt or load_prompt(_plugin_dir, "suggest_struct.txt")
         definition = retry_with_backoff(
             _single_mode_suggest,
-            args=(bv, func, var, skeleton, prompt_template, llm),
+            args=(bv, func, var, skeleton, prompt_template, llm, None, None, provider_config, _debug_logging_enabled(bv)),
             backoff_steps=backoff_steps,
             on_warning=_warn,
             on_failure=_fail,
@@ -653,7 +665,7 @@ def suggest_struct_from_range(
                 bv, func, None, [seed], provider_config=provider_config,
                 custom_prompt=custom_prompt, max_steps=max_steps,
                 max_structs=max_structs, tag_type_name=tag_type_name,
-                start=start,
+                start=start, debug=_debug_logging_enabled(bv),
             )
             if error:
                 return StructResult(address=start, error=error)
@@ -668,7 +680,7 @@ def suggest_struct_from_range(
         prompt_template = custom_prompt or load_prompt(_plugin_dir, "suggest_struct.txt")
         definition = retry_with_backoff(
             _single_mode_suggest,
-            args=(bv, func, None, [seed], prompt_template, llm, start, length),
+            args=(bv, func, None, [seed], prompt_template, llm, start, length, provider_config, _debug_logging_enabled(bv)),
             backoff_steps=backoff_steps,
         )
         return StructResult(address=start, definition=definition, applied=False)
