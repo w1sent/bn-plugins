@@ -13,12 +13,18 @@ from .core.prompts import load_prompt
 from .core.retry import retry_with_backoff
 from .core.logging import get_logger
 from .core.exceptions import AIConfigError, AITimeoutError
+from .core import llm_debug
 
 from . import ordering as ordering_mod
 from .ordering import OrderingError
 
 _plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("auto_rename")
+_PLUGIN_NAME = "auto_rename"
+
+
+def _debug_logging_enabled(bv):
+    return llm_debug.is_enabled("auto_rename.debug_logging", bv)
 
 _DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "auto-rename.json"
 _DEFAULT_PLUGIN_CONFIG = {
@@ -371,7 +377,7 @@ def _resolve_roots(bv, ordering):
     return None
 
 
-def _rename_one(bv, func, prompt_template, llm, options):
+def _rename_one(bv, func, prompt_template, llm, options, provider_config=None, debug=False):
     context = _build_context(bv, func)
     # $-style substitution, not str.format(): the template's example JSON
     # output ({"name": ..., "reasoning": ...}) contains literal braces that
@@ -379,6 +385,8 @@ def _rename_one(bv, func, prompt_template, llm, options):
     prompt = string.Template(prompt_template).safe_substitute(context)
 
     try:
+        if debug:
+            llm_debug.log_request(_PLUGIN_NAME, provider_config, prompt)
         response = llm.invoke(prompt)
         content = response.content.strip()
         if content.startswith("```"):
@@ -411,11 +419,13 @@ def _rename_one(bv, func, prompt_template, llm, options):
         )
 
 
-def _rename_var_one(bv, func, var, prompt_template, llm, options):
+def _rename_var_one(bv, func, var, prompt_template, llm, options, provider_config=None, debug=False):
     context = _build_var_context(bv, func, var)
     prompt = string.Template(prompt_template).safe_substitute(context)
 
     try:
+        if debug:
+            llm_debug.log_request(_PLUGIN_NAME, provider_config, prompt)
         response = llm.invoke(prompt)
         content = response.content.strip()
         if content.startswith("```"):
@@ -486,7 +496,7 @@ def rename_variable(
             set_progress(f"Renaming {var.name}...")
         return retry_with_backoff(
             _rename_var_one,
-            args=(bv, func, var, prompt_template, llm, options),
+            args=(bv, func, var, prompt_template, llm, options, provider_config, _debug_logging_enabled(bv)),
             backoff_steps=backoff_steps,
             on_warning=_warn,
             on_failure=_fail,
@@ -545,7 +555,7 @@ def _rename_var_pairs(
                     pool.submit(
                         retry_with_backoff,
                         _rename_var_one,
-                        args=(bv, f, v, prompt_template, llm, options),
+                        args=(bv, f, v, prompt_template, llm, options, provider_config, _debug_logging_enabled(bv)),
                         backoff_steps=backoff_steps,
                     ): (f, v)
                     for f, v in pairs
@@ -571,7 +581,9 @@ def _rename_var_pairs(
             if _cancelled():
                 break
             result = retry_with_backoff(
-                _rename_var_one, args=(bv, f, v, prompt_template, llm, options), backoff_steps=backoff_steps
+                _rename_var_one,
+                args=(bv, f, v, prompt_template, llm, options, provider_config, _debug_logging_enabled(bv)),
+                backoff_steps=backoff_steps,
             )
             results.append(result)
             _report(i + 1, result)
@@ -703,7 +715,7 @@ def rename_function(
             set_progress(f"Renaming {func.name}...")
         return retry_with_backoff(
             _rename_one,
-            args=(bv, func, prompt_template, llm, options),
+            args=(bv, func, prompt_template, llm, options, provider_config, _debug_logging_enabled(bv)),
             backoff_steps=backoff_steps,
             on_warning=_warn,
             on_failure=_fail,
@@ -790,7 +802,7 @@ def rename_functions(
                     pool.submit(
                         retry_with_backoff,
                         _rename_one,
-                        args=(bv, f, prompt_template, llm, options),
+                        args=(bv, f, prompt_template, llm, options, provider_config, _debug_logging_enabled(bv)),
                         backoff_steps=backoff_steps,
                     ): f
                     for f in ordered_funcs

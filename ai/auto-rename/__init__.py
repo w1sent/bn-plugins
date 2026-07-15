@@ -331,6 +331,11 @@ register_setting(
     "Max concurrent LLM calls when concurrency_mode is fixed-pool",
     3,
 )
+register_setting(
+    "auto_rename.debug_logging",
+    "Log every LLM request (timestamp, plugin, provider/model, prompt) to ~/.binaryninja/llm-request.log",
+    False,
+)
 
 PluginCommand.register_for_function(
     "Auto Rename\\Auto Rename", "Rename function using AI", _rename_current, _is_valid_func

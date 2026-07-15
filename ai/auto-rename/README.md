@@ -31,6 +31,7 @@ default names regardless of convention (`var_10`, `arg1`, `rax_1`, ...).
 | `auto_rename.ordering` | string | `"default"` | Scheduling order for bulk renaming (see below) |
 | `auto_rename.concurrency_mode` | string | `"sequential"` | `sequential` or `fixed-pool` |
 | `auto_rename.concurrency_workers` | int | `3` | Max concurrent LLM calls when `concurrency_mode` is `fixed-pool` |
+| `auto_rename.debug_logging` | bool | `false` | Log every LLM request (timestamp, plugin, provider/model, prompt) to `~/.binaryninja/llm-request.log` |
 
 ## Complex config file
 
