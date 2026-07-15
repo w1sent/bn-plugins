@@ -1,0 +1,22 @@
+Target: variable `$var_name` in function `$function_name` (at $address).
+
+Deterministic skeleton (advisory, from a first-pass HLIL access-pattern
+scan -- may be incomplete or wrong; verify against context and feel free to
+deviate):
+$skeleton
+
+String references in this function:
+$string_refs
+
+Data references in this function:
+$data_refs
+
+Existing user-defined struct types already in this binary:
+$existing_types
+
+Full disassembly (HLIL) of the function:
+$disassembly
+
+Investigate as needed (get_variable_context for related/nested pointers,
+lookup_type/list_type_names for reuse candidates), submit and apply the
+struct(s) you propose, then call confirm_edits.

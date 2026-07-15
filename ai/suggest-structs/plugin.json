@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Suggest Structs",
+  "type": ["helper"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "AI-driven struct suggestion from pointer access patterns",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}

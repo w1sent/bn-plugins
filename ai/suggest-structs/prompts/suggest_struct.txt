@@ -1,0 +1,43 @@
+You are reverse-engineering a binary in Binary Ninja. Propose a C struct
+definition for the pointer variable `$var_name` in function `$function_name`
+(at $address).
+
+A deterministic pass over this function's HLIL already found the following
+offset accesses on `$var_name`. Treat this as advisory context, not a hard
+constraint -- Binary Ninja's own analysis can miss or misattribute accesses,
+so if the surrounding disassembly, string references, or data references
+suggest a different or more complete layout, prefer that instead:
+
+$skeleton
+
+String references in this function:
+$string_refs
+
+Data references in this function:
+$data_refs
+
+Existing user-defined struct types already in this binary (reuse one of
+these -- reference it by name instead of redefining it -- if it already
+matches the layout you're proposing):
+$existing_types
+
+Full disassembly (HLIL) of the function for additional context:
+$disassembly
+
+Respond with ONLY a C struct definition (or multiple, if a nested struct is
+warranted), no prose, no markdown code fences, no JSON. Example:
+
+struct Header {
+    uint32_t magic;
+    uint32_t size;
+    void* next;
+};
+
+Give fields meaningful names based on how they're used. Reuse an existing
+type by referencing `struct ExistingName` instead of redefining it whenever
+the layout matches.
+
+If you define more than one struct (e.g. a nested struct that `$var_name`'s
+struct depends on), define the dependency first and put the struct that
+should be applied to `$var_name` itself LAST. The last struct definition in
+your response is the one that gets applied to the variable.
