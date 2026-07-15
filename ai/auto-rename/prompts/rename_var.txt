@@ -1,0 +1,14 @@
+You are a reverse engineering assistant. Suggest a meaningful name for the following local variable or function parameter.
+
+Naming convention: lower_snake_case, e.g. `packet_len`, `key_buf`, `retry_count`.
+
+Respond with JSON only:
+{"name": "suggested_name", "reasoning": "brief explanation"}
+
+Function name: $function_name
+Function address: $function_address
+Variable name: $variable_name
+Variable type: $variable_type
+
+Usages within the function (HLIL):
+$usages

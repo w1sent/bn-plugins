@@ -23,6 +23,7 @@ logger = get_logger("auto_rename")
 _DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "auto-rename.json"
 _DEFAULT_PLUGIN_CONFIG = {
     "custom_prompt": None,
+    "custom_var_prompt": None,
     "temperature": 0.1,
     "backoff_steps": [1, 2, 4, 8],
 }
@@ -41,6 +42,7 @@ def _ensure_deps_on_path():
         sys.path.insert(0, str(deps))
 
 _VALID_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9:]*(::[a-zA-Z_][a-zA-Z_0-9:]*)*$")
+_VALID_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
 
 _DEFAULT_CONCURRENCY_MODE = "sequential"
 _DEFAULT_CONCURRENCY_WORKERS = 3
@@ -60,6 +62,16 @@ class RenameOptions:
 @dataclass
 class RenameResult:
     address: int
+    old_name: str
+    new_name: Optional[str] = None
+    reasoning: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class VarRenameResult:
+    function_address: int
+    function_name: str
     old_name: str
     new_name: Optional[str] = None
     reasoning: Optional[str] = None
@@ -179,6 +191,44 @@ def _build_context(bv, func):
     }
 
 
+def _hlil_var_for(func, var_name):
+    if not func.hlil:
+        return None
+    for v in func.hlil.vars:
+        if v.name == var_name:
+            return v
+    return None
+
+
+def _is_auto_named_var(func, var):
+    return not func.is_var_user_defined(var)
+
+
+def _candidate_vars_in_function(func):
+    if not func.hlil:
+        return []
+    return [v for v in func.hlil.vars if _is_auto_named_var(func, v)]
+
+
+def _build_var_context(bv, func, var):
+    usage_lines = []
+    if func.hlil:
+        for block in func.hlil:
+            if block is None:
+                continue
+            for instr in block:
+                if var in instr.vars:
+                    usage_lines.append(f"  {instr.address:#x}: {instr}")
+
+    return {
+        "function_name": func.name,
+        "function_address": f"{func.start:#x}",
+        "variable_name": var.name,
+        "variable_type": str(var.type) if var.type is not None else "unknown",
+        "usages": "\n".join(usage_lines) or "(none)",
+    }
+
+
 def _is_auto_named(func):
     name = func.name
     return (
@@ -236,6 +286,21 @@ def _build_llm(provider_config):
     return ChatOpenAI(**kwargs)
 
 
+def _resolve_concurrency(bv, options):
+    """Resolve (concurrency_mode, workers), options taking precedence over BN
+    settings, which supply the default when the option is unset."""
+    from binaryninja import Settings
+
+    settings = Settings()
+    concurrency = (options.concurrency if options else None) or settings.get_string(
+        "auto_rename.concurrency_mode", resource=bv
+    )
+    workers = (options.workers if options else None) or settings.get_integer(
+        "auto_rename.concurrency_workers", resource=bv
+    )
+    return concurrency or _DEFAULT_CONCURRENCY_MODE, workers or _DEFAULT_CONCURRENCY_WORKERS
+
+
 def _resolve_scheduling(bv, options):
     """Resolve (ordering, concurrency_mode, workers), options taking precedence
     over BN settings, which supply the default when the option is unset."""
@@ -245,13 +310,8 @@ def _resolve_scheduling(bv, options):
     ordering = (options.ordering if options else None) or settings.get_string(
         "auto_rename.ordering", resource=bv
     )
-    concurrency = (options.concurrency if options else None) or settings.get_string(
-        "auto_rename.concurrency_mode", resource=bv
-    )
-    workers = (options.workers if options else None) or settings.get_integer(
-        "auto_rename.concurrency_workers", resource=bv
-    )
-    return ordering or "default", concurrency or _DEFAULT_CONCURRENCY_MODE, workers or _DEFAULT_CONCURRENCY_WORKERS
+    concurrency, workers = _resolve_concurrency(bv, options)
+    return ordering or "default", concurrency, workers
 
 
 def _resolve_plugin_config(bv, options):
@@ -273,13 +333,16 @@ def _resolve_plugin_config(bv, options):
     custom_prompt = (options.custom_prompt if options else None) or file_config.get(
         "custom_prompt"
     )
+    custom_var_prompt = (options.custom_prompt if options else None) or file_config.get(
+        "custom_var_prompt"
+    )
     temperature = (
         options.temperature
         if options and options.temperature is not None
         else file_config.get("temperature")
     )
     backoff_steps = file_config.get("backoff_steps") or _DEFAULT_PLUGIN_CONFIG["backoff_steps"]
-    return custom_prompt, temperature, backoff_steps
+    return custom_prompt, custom_var_prompt, temperature, backoff_steps
 
 
 def _apply_temperature(provider_config, temperature):
@@ -348,6 +411,260 @@ def _rename_one(bv, func, prompt_template, llm, options):
         )
 
 
+def _rename_var_one(bv, func, var, prompt_template, llm, options):
+    context = _build_var_context(bv, func, var)
+    prompt = string.Template(prompt_template).safe_substitute(context)
+
+    try:
+        response = llm.invoke(prompt)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1]
+            content = content.rsplit("\n```", 1)[0]
+        parsed = json.loads(content)
+        name = parsed.get("name", "").strip()
+        reasoning = parsed.get("reasoning", "")
+
+        if not _VALID_VAR_NAME_RE.match(name):
+            return VarRenameResult(
+                function_address=func.start,
+                function_name=func.name,
+                old_name=var.name,
+                error=f"LLM returned invalid name: {name}",
+            )
+
+        old_name = var.name
+        var.name = name
+        return VarRenameResult(
+            function_address=func.start,
+            function_name=func.name,
+            old_name=old_name,
+            new_name=name,
+            reasoning=reasoning,
+        )
+    except Exception as e:
+        return VarRenameResult(
+            function_address=func.start,
+            function_name=func.name,
+            old_name=var.name,
+            error=str(e),
+        )
+
+
+def rename_variable(
+    bv, func, var_name, *, provider=None, options=None, async_run=False, on_complete=None
+):
+    """Rename a single variable (local or parameter) in `func`.
+
+    Returns VarRenameResult when sync, _AsyncResult when async_run=True.
+    """
+    var = _hlil_var_for(func, var_name)
+    if var is None:
+        raise ValueError(f"variable '{var_name}' not found in function {func.name}")
+
+    _, custom_var_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+    ai_config = load_ai_config()
+    provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
+    llm = _build_llm(provider_config)
+    prompt_template = custom_var_prompt or load_prompt(_plugin_dir, "rename_var.txt")
+
+    def _warn(attempt, exc):
+        logger.warning(
+            f"variable rename attempt {attempt} failed for {var.name} in {func.name}: {exc}"
+        )
+
+    def _fail(exc):
+        logger.error(f"variable rename failed for {var.name} in {func.name}: {exc}")
+
+    def _run(set_progress=None, is_cancelled=None):
+        if set_progress:
+            set_progress(f"Renaming {var.name}...")
+        return retry_with_backoff(
+            _rename_var_one,
+            args=(bv, func, var, prompt_template, llm, options),
+            backoff_steps=backoff_steps,
+            on_warning=_warn,
+            on_failure=_fail,
+        )
+
+    if async_run:
+        return _AsyncResult(bv, [func], _run, f"Renaming {var.name}", on_complete=on_complete)
+
+    return _run()
+
+
+def _rename_var_pairs(
+    bv,
+    pairs,
+    *,
+    provider=None,
+    options=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
+    title="Renaming variables",
+):
+    """Shared batch executor for variable rename entry points.
+
+    `pairs` is a list of `(func, var)` tuples, already ordered.
+    """
+    total = len(pairs)
+
+    def _run(set_progress=None, is_cancelled=None):
+        _, custom_var_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+        ai_config = load_ai_config()
+        provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
+        llm = _build_llm(provider_config)
+        prompt_template = custom_var_prompt or load_prompt(_plugin_dir, "rename_var.txt")
+        concurrency, workers = _resolve_concurrency(bv, options)
+
+        def _cancelled():
+            return (cancel and cancel()) or (is_cancelled and is_cancelled())
+
+        def _report(done, result=None):
+            if progress:
+                progress(done, total)
+            if set_progress:
+                label = f"Renaming variables ({done}/{total})"
+                if result is not None and result.new_name:
+                    label += f": {result.old_name} -> {result.new_name}"
+                set_progress(label)
+
+        if concurrency == "fixed-pool":
+            import concurrent.futures
+
+            results = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                future_map = {
+                    pool.submit(
+                        retry_with_backoff,
+                        _rename_var_one,
+                        args=(bv, f, v, prompt_template, llm, options),
+                        backoff_steps=backoff_steps,
+                    ): (f, v)
+                    for f, v in pairs
+                }
+                for i, future in enumerate(concurrent.futures.as_completed(future_map)):
+                    if _cancelled():
+                        for fut in future_map:
+                            fut.cancel()
+                        break
+                    f, v = future_map[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        result = VarRenameResult(
+                            function_address=f.start, function_name=f.name, old_name=v.name, error=str(e)
+                        )
+                    results.append(result)
+                    _report(i + 1, result)
+            return results
+
+        results = []
+        for i, (f, v) in enumerate(pairs):
+            if _cancelled():
+                break
+            result = retry_with_backoff(
+                _rename_var_one, args=(bv, f, v, prompt_template, llm, options), backoff_steps=backoff_steps
+            )
+            results.append(result)
+            _report(i + 1, result)
+        return results
+
+    if async_run:
+        return _AsyncResult(bv, [f for f, _ in pairs], _run, title, on_complete=on_complete)
+    return _run()
+
+
+def rename_variables(
+    bv, func, *, provider=None, options=None, progress=None, cancel=None, async_run=False, on_complete=None
+):
+    """Rename all auto-named variables in a single function (function-level batch)."""
+    variables = sorted(_candidate_vars_in_function(func), key=lambda v: v.name)
+    pairs = [(func, v) for v in variables]
+    return _rename_var_pairs(
+        bv,
+        pairs,
+        provider=provider,
+        options=options,
+        progress=progress,
+        cancel=cancel,
+        async_run=async_run,
+        on_complete=on_complete,
+        title=f"Renaming variables in {func.name}",
+    )
+
+
+def rename_all_variables(
+    bv,
+    *,
+    provider=None,
+    options=None,
+    restrict_to=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
+):
+    """Rename all auto-named variables across the binary (global batch).
+
+    `restrict_to`, if given, confines the sweep to that set of functions
+    (e.g. a UI selection) instead of every function in `bv`.
+    """
+    funcs = list(restrict_to) if restrict_to is not None else list(bv.functions)
+    pairs = [
+        (f, v)
+        for f in sorted(funcs, key=lambda f: f.start)
+        for v in sorted(_candidate_vars_in_function(f), key=lambda v: v.name)
+    ]
+    return _rename_var_pairs(
+        bv,
+        pairs,
+        provider=provider,
+        options=options,
+        progress=progress,
+        cancel=cancel,
+        async_run=async_run,
+        on_complete=on_complete,
+        title=f"Renaming {len(pairs)} variables",
+    )
+
+
+def rename_filtered_variables(
+    bv,
+    pattern,
+    *,
+    provider=None,
+    options=None,
+    restrict_to=None,
+    progress=None,
+    cancel=None,
+    async_run=False,
+    on_complete=None,
+):
+    """Rename auto-named variables whose name matches regex `pattern`."""
+    compiled = re.compile(pattern)
+    funcs = list(restrict_to) if restrict_to is not None else list(bv.functions)
+    pairs = [
+        (f, v)
+        for f in sorted(funcs, key=lambda f: f.start)
+        for v in sorted(_candidate_vars_in_function(f), key=lambda v: v.name)
+        if compiled.match(v.name)
+    ]
+    return _rename_var_pairs(
+        bv,
+        pairs,
+        provider=provider,
+        options=options,
+        progress=progress,
+        cancel=cancel,
+        async_run=async_run,
+        on_complete=on_complete,
+        title=f"Renaming {len(pairs)} filtered variables",
+    )
+
+
 def rename_function(
     bv, func, *, provider=None, mode=None, options=None, async_run=False, on_complete=None
 ):
@@ -355,7 +672,7 @@ def rename_function(
 
     Returns RenameResult when sync, _AsyncResult when async_run=True.
     """
-    custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+    custom_prompt, _, temperature, backoff_steps = _resolve_plugin_config(bv, options)
     ai_config = load_ai_config()
     provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
     llm = _build_llm(provider_config)
@@ -436,7 +753,7 @@ def rename_functions(
     total = len(ordered_funcs)
 
     def _run(set_progress=None, is_cancelled=None):
-        custom_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+        custom_prompt, _, temperature, backoff_steps = _resolve_plugin_config(bv, options)
         ai_config = load_ai_config()
         provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
         llm = _build_llm(provider_config)
@@ -573,6 +890,22 @@ rename_filtered(bv, pattern, *, provider=None, mode=None, options=None, anchor=N
                  restrict_to=None, progress=None, cancel=None) -> list[RenameResult]
     Rename functions matching a regex pattern.
 
+rename_variable(bv, func, var_name, *, provider=None, options=None) -> VarRenameResult
+    Rename a single variable (local or parameter) in `func`.
+
+rename_variables(bv, func, *, provider=None, options=None, progress=None,
+                  cancel=None) -> list[VarRenameResult]
+    Rename all auto-named variables in `func` (function-level batch).
+
+rename_all_variables(bv, *, provider=None, options=None, restrict_to=None,
+                      progress=None, cancel=None) -> list[VarRenameResult]
+    Rename all auto-named variables across the binary (global batch).
+    `restrict_to`, if given, confines the sweep to that set of functions.
+
+rename_filtered_variables(bv, pattern, *, provider=None, options=None, restrict_to=None,
+                           progress=None, cancel=None) -> list[VarRenameResult]
+    Rename variables whose name matches a regex pattern.
+
 Scheduling:
     `options.ordering` picks which function is renamed next (see
     `ordering.ORDERINGS`): default, leaves-first, top-down, local-breadth,
@@ -591,8 +924,15 @@ Scheduling:
     Both default from the `auto_rename.ordering` / `auto_rename.concurrency_mode`
     / `auto_rename.concurrency_workers` BN settings when unset on `options`.
 
+    Variable batch renaming (`rename_variables`/`rename_all_variables`/
+    `rename_filtered_variables`) only honors `options.concurrency` /
+    `options.workers` -- `options.ordering` doesn't apply to variables, which
+    are always processed in a fixed (function address, variable name) order.
+
 Types:
     RenameResult(address: int, old_name: str, new_name: str | None, reasoning: str | None, error: str | None)
+    VarRenameResult(function_address: int, function_name: str, old_name: str,
+                     new_name: str | None, reasoning: str | None, error: str | None)
     RenameOptions(provider: str | None, mode: str | None, temperature: float | None,
                   custom_prompt: str | None, ordering: str | None, concurrency: str | None,
                   workers: int | None)

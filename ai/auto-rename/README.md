@@ -11,6 +11,15 @@ AI-driven variable and function renaming using LLMs.
 | Auto Rename (Filtered) | Command palette | Rename functions matching a regex |
 | Auto Rename All | Toolbar / Command palette | Rename all auto-named functions, using the `auto_rename.*` settings |
 | Auto Rename All (Choose Strategy) | Command palette | Rename all auto-named functions, picking ordering/concurrency for this run only (not persisted) |
+| Auto Rename Variable | HLIL instruction (right-click) | Rename the variable referenced at this location |
+| Auto Rename Variables (Current Function) | Function (right-click) | Rename all auto-named variables in the current function (function-level batch) |
+| Auto Rename Variables (Selection) | Selection (right-click) | Rename auto-named variables in the selected functions (batch) |
+| Auto Rename Variables (Filtered) | Command palette | Rename variables matching a regex, across the whole binary |
+| Auto Rename All Variables | Toolbar / Command palette | Rename every auto-named variable in the binary (global batch) |
+
+"Auto-named" for a variable means Binary Ninja hasn't recorded a user-supplied
+name for it (`func.is_var_user_defined(var)` is false) -- this covers
+default names regardless of convention (`var_10`, `arg1`, `rax_1`, ...).
 
 ## Settings
 
@@ -31,6 +40,7 @@ values the first time a rename runs, if it doesn't already exist:
 ```json
 {
   "custom_prompt": null,
+  "custom_var_prompt": null,
   "temperature": 0.1,
   "backoff_steps": [1, 2, 4, 8]
 }
@@ -38,7 +48,8 @@ values the first time a rename runs, if it doesn't already exist:
 
 | Key | Description |
 |---|---|
-| `custom_prompt` | Raw prompt template text overriding the bundled `prompts/rename.txt`; `null` uses the bundled template |
+| `custom_prompt` | Raw prompt template text overriding the bundled `prompts/rename.txt` (function renaming); `null` uses the bundled template |
+| `custom_var_prompt` | Raw prompt template text overriding the bundled `prompts/rename_var.txt` (variable renaming); `null` uses the bundled template |
 | `temperature` | Default LLM temperature, used when the resolved provider (`ai-config.json`) doesn't set its own |
 | `backoff_steps` | Retry delays in seconds for failed rename attempts |
 
@@ -80,6 +91,22 @@ Ordering under `fixed-pool` is best-effort: functions are *submitted* in order, 
 
 Use **Auto Rename All (Choose Strategy)** to pick ordering/concurrency for a single run without changing the persisted settings.
 
+## Variable renaming
+
+Variable renaming works the same way as function renaming but targets local
+variables and parameters (via the HLIL variable API) instead of function
+symbols. It shares the `auto_rename.*` settings, the complex config file, and
+the `auto_rename.concurrency_mode` / `auto_rename.concurrency_workers`
+settings -- the `auto_rename.ordering` setting does **not** apply, since the
+function-graph orderings (`leaves-first`, `local-breadth`, etc.) aren't
+meaningful for variables. Variables are always processed in a fixed
+`(function address, variable name)` order; `fixed-pool` concurrency runs
+that many renames at once, same as for functions.
+
+Prompts use a separate bundled template, `prompts/rename_var.txt`, with its
+own placeholders: `$function_name`, `$function_address`, `$variable_name`,
+`$variable_type`, `$usages` (the HLIL lines where the variable appears).
+
 ## API
 
 ```python
@@ -101,6 +128,18 @@ api.rename_all(bv, async_run=True, on_complete=my_callback)
 handle = api.rename_all(bv, async_run=True)
 handle.done()  # bool
 results = handle.result(timeout=120)  # blocks until done
+
+# Rename a single variable
+result = api.rename_variable(bv, func, "var_10")
+
+# Rename all auto-named variables in one function (function-level batch)
+results = api.rename_variables(bv, func)
+
+# Rename every auto-named variable in the binary (global batch)
+results = api.rename_all_variables(bv)
+
+# Rename variables matching a regex, confined to a set of functions
+results = api.rename_filtered_variables(bv, r"^i\d*$", restrict_to=[func_a, func_b])
 ```
 
 For full API reference, call `api.help()` in BN's Python console.

@@ -191,6 +191,108 @@ def _rename_all_choose_strategy(bv, addr):
     )
 
 
+def _apply_var_results(bv, results, tag_type):
+    successes = 0
+    failures = 0
+    for r in results:
+        if r.new_name:
+            successes += 1
+            logger.info(
+                f"renamed variable {r.old_name} in {r.function_name} at "
+                f"{r.function_address:#x} -> {r.new_name}"
+            )
+            if r.reasoning:
+                logger.info(f"  reason: {r.reasoning}")
+            if tag_type:
+                tag_item(
+                    bv,
+                    r.function_address,
+                    _TAG_TYPE_NAME,
+                    f"renamed variable {r.old_name} -> {r.new_name}",
+                )
+        else:
+            failures += 1
+            logger.warning(
+                f"failed to rename variable {r.old_name} in {r.function_name}: {r.error}"
+            )
+    msg = f"Renamed {successes} variable(s)"
+    if failures:
+        msg += f", {failures} failed (see log)"
+    show_message_box("Auto Rename", msg)
+
+
+def _run_var_batch(bv, call):
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+
+    def on_complete(results):
+        bv.commit_undo_actions()
+        _apply_var_results(bv, results, tag_type)
+
+    bv.begin_undo_actions()
+    call(async_run=True, on_complete=on_complete)
+
+
+def _rename_variable_at_instr(bv, instr):
+    func = instr.function.source_function
+    if func is None:
+        show_message_box("Auto Rename", "Could not resolve the containing function.")
+        return
+    candidates = [v for v in instr.vars if not func.is_var_user_defined(v)]
+    if not candidates:
+        candidates = list(instr.vars)
+    if not candidates:
+        show_message_box("Auto Rename", "No variable found at this location.")
+        return
+    var_name = candidates[0].name
+
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+
+    def on_complete(result):
+        bv.commit_undo_actions()
+        _apply_var_results(bv, [result], tag_type)
+
+    bv.begin_undo_actions()
+    api.rename_variable(bv, func, var_name, async_run=True, on_complete=on_complete)
+
+
+def _is_valid_hlil_var_instr(bv, instr):
+    return bool(instr.vars)
+
+
+def _rename_function_variables(bv, func):
+    _run_var_batch(bv, lambda **kw: api.rename_variables(bv, func, **kw))
+
+
+def _rename_selection_variables(bv, addr, length):
+    funcs = [f for f in bv.functions if addr <= f.start < addr + length]
+    if not funcs:
+        show_message_box("Auto Rename", "No functions in the current selection.")
+        return
+    _run_var_batch(bv, lambda **kw: api.rename_all_variables(bv, restrict_to=funcs, **kw))
+
+
+def _rename_all_variables(bv, addr):
+    _run_var_batch(bv, lambda **kw: api.rename_all_variables(bv, **kw))
+
+
+def _rename_filtered_variables(bv, addr):
+    from binaryninja.interaction import get_text_line_input
+
+    pattern = get_text_line_input(
+        "Regex pattern (matches variable names):", "Auto Rename Variables (Filtered)"
+    )
+    if not pattern:
+        return
+    import re
+
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        show_message_box("Auto Rename", f"Invalid regex: {e}")
+        return
+    _run_var_batch(bv, lambda **kw: api.rename_filtered_variables(bv, pattern, **kw))
+
+
 def _is_valid_func(bv, func):
     return func is not None
 
@@ -251,6 +353,35 @@ PluginCommand.register_for_address(
     "Auto Rename\\Auto Rename All (Choose Strategy)",
     "Rename all auto-named functions using AI, picking ordering/concurrency for this run only",
     _rename_all_choose_strategy,
+)
+
+PluginCommand.register_for_high_level_il_instruction(
+    "Auto Rename Variables\\Auto Rename Variable",
+    "Rename the variable at this location using AI",
+    _rename_variable_at_instr,
+    _is_valid_hlil_var_instr,
+)
+PluginCommand.register_for_function(
+    "Auto Rename Variables\\Auto Rename Variables (Current Function)",
+    "Rename all auto-named variables in the current function using AI",
+    _rename_function_variables,
+    _is_valid_func,
+)
+PluginCommand.register_for_range(
+    "Auto Rename Variables\\Auto Rename Variables (Selection)",
+    "Rename auto-named variables in the selected functions using AI",
+    _rename_selection_variables,
+    _is_valid_selection,
+)
+PluginCommand.register_for_address(
+    "Auto Rename Variables\\Auto Rename Variables (Filtered)",
+    "Rename variables matching a regex pattern using AI",
+    _rename_filtered_variables,
+)
+PluginCommand.register_for_address(
+    "Auto Rename Variables\\Auto Rename All Variables",
+    "Rename all auto-named variables in the binary using AI",
+    _rename_all_variables,
 )
 
 try:
