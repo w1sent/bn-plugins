@@ -17,7 +17,7 @@ from .core.exceptions import AIConfigError, AITimeoutError
 from . import ordering as ordering_mod
 from .ordering import OrderingError
 
-_plugin_dir = Path(__file__).resolve().parent
+_plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("auto_rename")
 
 _DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "auto-rename.json"
@@ -462,12 +462,6 @@ def rename_variable(
     if var is None:
         raise ValueError(f"variable '{var_name}' not found in function {func.name}")
 
-    _, custom_var_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
-    ai_config = load_ai_config()
-    provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
-    llm = _build_llm(provider_config)
-    prompt_template = custom_var_prompt or load_prompt(_plugin_dir, "rename_var.txt")
-
     def _warn(attempt, exc):
         logger.warning(
             f"variable rename attempt {attempt} failed for {var.name} in {func.name}: {exc}"
@@ -477,6 +471,17 @@ def rename_variable(
         logger.error(f"variable rename failed for {var.name} in {func.name}: {exc}")
 
     def _run(set_progress=None, is_cancelled=None):
+        # Built inside _run(), not before, so the lazy provider import (e.g.
+        # langchain_ollama) happens on the thread that actually executes --
+        # the background thread when async_run=True -- matching
+        # _ensure_deps_on_path()'s expectations instead of running on the
+        # calling thread before the background thread even exists.
+        _, custom_var_prompt, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+        ai_config = load_ai_config()
+        provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
+        llm = _build_llm(provider_config)
+        prompt_template = custom_var_prompt or load_prompt(_plugin_dir, "rename_var.txt")
+
         if set_progress:
             set_progress(f"Renaming {var.name}...")
         return retry_with_backoff(
@@ -672,12 +677,6 @@ def rename_function(
 
     Returns RenameResult when sync, _AsyncResult when async_run=True.
     """
-    custom_prompt, _, temperature, backoff_steps = _resolve_plugin_config(bv, options)
-    ai_config = load_ai_config()
-    provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
-    llm = _build_llm(provider_config)
-    prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
-
     def _warn(attempt, exc):
         logger.warning(
             f"rename attempt {attempt} failed for {func.name} at {func.start:#x}: {exc}"
@@ -689,6 +688,17 @@ def rename_function(
         )
 
     def _run(set_progress=None, is_cancelled=None):
+        # Built inside _run(), not before, so the lazy provider import (e.g.
+        # langchain_ollama) happens on the thread that actually executes --
+        # the background thread when async_run=True -- matching
+        # _ensure_deps_on_path()'s expectations instead of running on the
+        # calling thread before the background thread even exists.
+        custom_prompt, _, temperature, backoff_steps = _resolve_plugin_config(bv, options)
+        ai_config = load_ai_config()
+        provider_config = _apply_temperature(resolve_provider(ai_config, provider), temperature)
+        llm = _build_llm(provider_config)
+        prompt_template = custom_prompt or load_prompt(_plugin_dir, "rename.txt")
+
         if set_progress:
             set_progress(f"Renaming {func.name}...")
         return retry_with_backoff(

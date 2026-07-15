@@ -27,7 +27,7 @@ from .api import (
     _hlil_var_for,
 )
 
-_plugin_dir = Path(__file__).resolve().parent
+_plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("suggest_structs")
 
 

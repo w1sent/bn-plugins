@@ -14,7 +14,7 @@ from .core.retry import retry_with_backoff
 from .core.logging import get_logger
 from .core.exceptions import AIConfigError, AITimeoutError
 
-_plugin_dir = Path(__file__).resolve().parent
+_plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("suggest_structs")
 
 _DEFAULT_PLUGIN_CONFIG_PATH = Path.home() / ".binaryninja" / "suggest-structs.json"

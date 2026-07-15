@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-_plugin_dir = Path(__file__).resolve().parent
+_plugin_dir = Path(__file__).parent.resolve()
 _deps = _plugin_dir / ".deps"
 if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
