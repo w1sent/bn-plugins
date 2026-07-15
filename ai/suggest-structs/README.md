@@ -15,6 +15,51 @@ when `suggest_structs.mode` is `single` (see [Preview](#preview) below).
 `Suggest Struct (Batch)` never previews and honors whichever mode is
 configured per candidate.
 
+## Usage
+
+1. **Install the plugin** if you haven't: `python scripts/install.py --link`
+   (dev symlink mode) or `python scripts/install.py` (copy mode), then
+   (re)start Binary Ninja. Confirm it loaded by checking the log for
+   `suggest-structs loaded, provider: ...`.
+2. **Open a binary** and let auto-analysis finish.
+3. **Single variable** — in a decompiled (HLIL) function, click on or near
+   a pointer-typed variable whose struct you want inferred (e.g. the
+   result of a `malloc` call that's accessed via raw offsets, or an
+   untyped `void*` parameter). Right-click → `Suggest Structs` →
+   `Suggest Struct` (also available via the command palette,
+   <kbd>Ctrl/Cmd+P</kbd>). The command is greyed out if no pointer
+   variable is found near the cursor.
+   - With `suggest_structs.mode = single` (the faster, cheaper mode): a
+     background task runs, then an editable text popup appears with the
+     LLM's proposed C struct — edit it if you want, then accept to apply
+     it, or cancel to discard. Nothing is written to the binary until you
+     accept.
+   - With `mode = multi` (the default): the agent investigates and applies
+     directly during its session (no popup) — check BN's log for what it
+     did, and its edits land as one undoable action
+     (<kbd>Ctrl/Cmd+Z</kbd> reverts the whole session at once).
+4. **A specific memory region** — select a byte range in the hex view or
+   linear/graph view, right-click → `Suggest Structs` →
+   `Suggest Struct (Selection)`. Same preview/apply behavior as above, but
+   seeded from the selection's size instead of a variable's access
+   pattern — useful when you already know "this N-byte blob is probably a
+   struct" (e.g. while stepping through it in the debugger) but haven't
+   pointed at a typed variable yet.
+5. **Sweep the whole binary** — command palette → `Suggest Struct
+   (Batch)` (or Toolbar). No preview: it walks every candidate pointer
+   variable and untyped global (see `Settings` below for what counts as
+   "candidate") and applies each suggestion directly, showing progress in
+   BN's background-task indicator with a cancel button. Applied structs
+   are tagged `AI Struct` on their containing function — use BN's Tag
+   Browser to review/filter everything the batch run touched, and
+   <kbd>Ctrl/Cmd+Z</kbd> to undo the whole batch as one action if you don't
+   like the result.
+6. **Tune behavior** in Settings (search "suggest_structs" in BN's
+   Settings dialog) — provider, mode, confidence threshold, agent step
+   budget — see [Settings](#settings) below. Advanced prompt/temperature
+   overrides live in the JSON file at `suggest_structs.config_path`
+   instead (auto-created with defaults on first use).
+
 ## How struct derivation works
 
 A deterministic pass over the target variable's HLIL uses builds an
