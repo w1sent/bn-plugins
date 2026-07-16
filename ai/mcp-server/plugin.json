@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "MCP Server",
+  "type": ["helper"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "Expose Binary Ninja's database as an MCP (Model Context Protocol) server for external AI tools",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}
