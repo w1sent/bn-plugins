@@ -101,6 +101,8 @@ commercial-only headless mode when testing plugins.
 | `search_docs(pattern, limit=30)` | Search Binary Ninja's Python API for matching classes/functions |
 | `read_logs(limit=100, offset=0)` | Read recent BN log lines, most recent first |
 | `create_snippet(name, script)` | Save a script into BN's real `snippets/` directory (visible in the Snippet Manager); refuses to overwrite an existing snippet |
+| `list_snippets()` | List snippets available in BN's `snippets/` directory, by name |
+| `run_snippet(name, async_run=False)` | Run a snippet by name (see `list_snippets`), same semantics as `execute_script` |
 
 ### Administration (always registered)
 

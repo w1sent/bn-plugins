@@ -1,5 +1,6 @@
 """Scripting tools -- execute_script, load_script, search_docs, read_logs,
-create_snippet, plus async job control (get_script_status/cancel_script).
+create_snippet, list_snippets, run_snippet, plus async job control
+(get_script_status/cancel_script).
 
 Gated by `mcp_server.scripting_enabled` (default off): `execute_script` and
 `load_script` run arbitrary Python inside the BN process, which is the
@@ -309,6 +310,27 @@ def create_snippet(name: str, script: str) -> dict:
     return {"path": str(path)}
 
 
+@serialized
+def list_snippets() -> dict:
+    """List the snippets available in BN's own snippets/ directory (the
+    same ones visible in BN's Snippet Manager), by name."""
+    if not _SNIPPETS_DIR.is_dir():
+        return {"snippets": []}
+    return {"snippets": sorted(p.stem for p in _SNIPPETS_DIR.glob("*.py"))}
+
+
+def run_snippet(name: str, async_run: bool = False) -> dict:
+    """Run a snippet from BN's snippets/ directory by name (see
+    list_snippets), same semantics as execute_script (including the
+    async_run flag)."""
+    if not _SNIPPET_NAME_RE.match(name):
+        raise ValueError("snippet name must match [a-zA-Z0-9_-]+")
+    path = _SNIPPETS_DIR / f"{name}.py"
+    if not path.is_file():
+        raise FileNotFoundError(f"no snippet named {name!r} at {path}")
+    return execute_script(path.read_text(), async_run=async_run)
+
+
 def register(mcp) -> None:
     _ensure_log_redirect()
     # log_tool_call wraps each tool so every call -- not just
@@ -323,5 +345,7 @@ def register(mcp) -> None:
         (search_docs, "search_docs"),
         (read_logs, "read_logs"),
         (create_snippet, "create_snippet"),
+        (list_snippets, "list_snippets"),
+        (run_snippet, "run_snippet"),
     ):
         mcp.add_tool(log_tool_call(fn), name=name, description=fn.__doc__)
