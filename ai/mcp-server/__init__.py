@@ -50,7 +50,7 @@ register_setting(
 )
 register_setting(
     "mcp_server.destructive_write_enabled",
-    "Enable destructive write tools (patch_asm, patch_c, edit_hex)",
+    "Enable destructive write tools (patch_asm, edit_hex)",
     False,
 )
 register_setting(
