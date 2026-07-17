@@ -81,16 +81,16 @@ Always registered -- no gating setting.
 - [x] `load_binary(path)` — load a binary or bndb (opens it as a new GUI tab and selects it)
 
 ## MCP Tools (debugging)
-Gated by `mcp_server.debugging_enabled` (default **off**).
-- [ ] `launch()` — launch debugger
-- [ ] `set_breakpoint(addr)` — set breakpoint
-- [ ] `resume()` — resume execution
-- [ ] `run_until(addr)` — execute till an address
-- [ ] `step_into()` — step into function
-- [ ] `step_over()` — step over
-- [ ] `step_return()` — run till function returns
-- [ ] `kill_process()` — stop debugged process
-- [ ] `restart()` — restarts debugged process
+Gated by `mcp_server.debugging_enabled` (default **off**). Built on `binaryninja.debugger.DebuggerController`. Note: PIE binaries get rebased to their live load address once a debug session starts -- re-fetch addresses (e.g. via get_function) after `launch()`, not before, when setting breakpoints.
+- [x] `launch()` — launch debugger
+- [x] `set_breakpoint(addr)` — set breakpoint
+- [x] `resume()` — resume execution
+- [x] `run_until(addr)` — execute till an address
+- [x] `step_into()` — step into function
+- [x] `step_over()` — step over
+- [x] `step_return()` — run till function returns
+- [x] `kill_process()` — stop debugged process
+- [x] `restart()` — restarts debugged process
 
 ## MCP Tools (GUI utility)
 Gated by `mcp_server.screenshot_enabled` (default **off**).
