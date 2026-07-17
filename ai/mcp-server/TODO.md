@@ -45,15 +45,15 @@ Always registered -- no gating setting (the core read-only use case). Operate on
 - [x] `search(pattern)` — search function/symbol names and defined strings for a substring or regex
 
 ## MCP Tools (write — safe)
-Gated by `mcp_server.write_enabled` (default **on**) — low-risk, easily reversible operations.
-- [ ] `rename_function(addr, name)` — rename a function
-- [ ] `rename_symbol(addr, name)` — rename a symbol
-- [ ] `set_comment(addr, comment)` — set a comment at address
-- [ ] `set_function_comment(addr, comment)` — set function-level comment
-- [ ] `create_struct(c_struct)` — create a struct type
-- [ ] `load_header(path)` — create all types in a header file
-- [ ] `set_type(addr, type_name)` — apply a type to an address
-- [ ] `create_function(addr)` — create a function at address
+Gated by `mcp_server.write_enabled` (default **on**) — low-risk, easily reversible operations; only ever add/replace user-attributed metadata (names, comments, types, function boundaries), never binary bytes.
+- [x] `rename_function(addr, name)` — rename a function
+- [x] `rename_symbol(addr, name)` — rename a symbol
+- [x] `set_comment(addr, comment)` — set a comment at address
+- [x] `set_function_comment(addr, comment)` — set function-level comment
+- [x] `create_struct(c_struct)` — create a struct type from C struct syntax
+- [x] `load_header(path)` — create all types in a header file
+- [x] `set_type(addr, type_name)` — apply a type to an address (defines a data variable)
+- [x] `create_function(addr)` — create a function at address
 
 ## MCP Tools (undo)
 Gated by its own setting `mcp_server.undo_enabled` (default **off**) — separate from safe-writes because it reverts BN's undo stack wholesale, including manual edits the human made in the GUI, not just AI/tool-made changes. Off by default so an agent can't silently discard the user's own work.
