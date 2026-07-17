@@ -76,8 +76,9 @@ Gated by `mcp_server.scripting_enabled` (default **off**) — `execute_script`/`
 - [ ] `create_snippet(name, script)` — save a snippet into BN's own `snippets/` directory (visible in BN's Snippet Manager); refuses to overwrite an existing snippet
 
 ## MCP Tools (administration)
-- [ ] `select_binary(id)` — switch which binary is affected by the MCP tools; `id` is the integer index into `program://binaries`
-- [ ] `load_binary(path)` — load a binary or bndb
+Always registered -- no gating setting.
+- [x] `select_binary(id)` — switch which binary is affected by the MCP tools; `id` is the integer index into `program://binaries`
+- [x] `load_binary(path)` — load a binary or bndb (opens it as a new GUI tab and selects it)
 
 ## MCP Tools (debugging)
 Gated by `mcp_server.debugging_enabled` (default **off**).
@@ -101,9 +102,9 @@ Gated by `mcp_server.screenshot_enabled` (default **off**).
 - [x] `binary://symbols` — full symbol table
 - [x] `binary://types` — all type definitions
 - [x] `binary://sections` — section list
-- [ ] `binary://selected` — the currently selected binary (per `select_binary`)
-- [ ] `program://plugins` — lists installed plugins
-- [ ] `program://binaries` — lists loaded binaries
+- [x] `binary://selected` — the currently selected binary (per `select_binary`)
+- [x] `program://plugins` — lists installed plugins
+- [x] `program://binaries` — lists loaded binaries
 - [ ] `gui://status` — current user-interaction state: opened function, opened view, focused panel
 
 ## MCP Prompts
