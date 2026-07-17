@@ -17,7 +17,7 @@ from typing import Optional
 
 from binaryninja import Settings
 
-from . import administration, prompts, reading, scripting, writing
+from . import administration, patching, prompts, reading, scripting, writing
 from .core.logging import get_logger
 from .server import MCPServer, generate_api_key
 
@@ -74,6 +74,8 @@ def _register_tools(mcp, settings) -> None:
     prompts.register(mcp)
     if settings.get_bool("mcp_server.write_enabled"):
         writing.register(mcp)
+    if settings.get_bool("mcp_server.destructive_write_enabled"):
+        patching.register(mcp)
     if settings.get_bool("mcp_server.scripting_enabled"):
         scripting.register(mcp)
 

@@ -61,9 +61,9 @@ Gated by its own setting `mcp_server.undo_enabled` (default **off**) — separat
 
 ## MCP Tools (write — destructive)
 Gated by `mcp_server.destructive_write_enabled` (default **off**) — can corrupt the file/analysis, unlike the safe-write tier.
-- [ ] `patch_asm(addr, assembly)` — patch the binary at a location using assembly
-- [ ] `patch_c(addr, c_code)` — patch the binary at a location using a C code snippet
-- [ ] `edit_hex(addr, hex)` — edit the file at the given location using raw hex
+- [x] `patch_asm(addr, assembly)` — patch the binary at a location using assembly
+- [ ] `patch_c(addr, c_code)` — patch the binary at a location using a C code snippet. **Deferred**: BN's Python API has no headless C-compile facility; the GUI's `binaryninjaui.CompileDialog` looked promising but its compile step is wired to an internal button's Qt signal, not a public method (confirmed live: calling `.accept()` directly closes the dialog without compiling, `getBytes()` comes back empty). Revisit if a public, non-interactive compile entry point appears in a future BN version.
+- [x] `edit_hex(addr, hex)` — edit the file at the given location using raw hex
 
 ## MCP Tools (scripting)
 Gated by `mcp_server.scripting_enabled` (default **off**) — `execute_script`/`load_script` are arbitrary code execution inside the BN process. `execute_script` and `load_script` support an optional async flag (default sync execution); async jobs are pollable and cancellable.
