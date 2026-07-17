@@ -58,6 +58,13 @@ class _ThreadLocalStream:
     def flush(self):
         self._target().flush()
 
+    def __getattr__(self, name):
+        # Anything beyond write/flush (isatty, encoding, fileno, ...) --
+        # other libraries (e.g. uvicorn's logging setup) probe sys.stdout
+        # for these, so fall through to the real stream rather than
+        # erroring with AttributeError.
+        return getattr(self._target(), name)
+
     def push(self, buffer):
         self._local.buffer = buffer
 

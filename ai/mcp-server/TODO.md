@@ -29,19 +29,20 @@ Build in this order; each phase should be independently usable.
 8. **Debugging tools** — off by default, lowest priority (effectively a second plugin's surface)
 
 ## MCP Tools (read)
-- [ ] `get_function(name_or_addr, IL_level)` — function metadata + disassembly/LLIL/MLIL/HLIL/LLIL_SSA/MLIL_SSA/HLIL_SSA
-- [ ] `get_functions(limit, offset)` — paginated function list
-- [ ] `get_symbols()` — all symbols with names, addresses, types
-- [ ] `get_xrefs_to(addr)` — cross-references to an address
-- [ ] `get_xrefs_from(addr)` — cross-references from an address
-- [ ] `get_types()` — all user-defined types
-- [ ] `get_type(name)` — specific type definition
-- [ ] `get_data(addr, size)` — raw bytes at address
-- [ ] `get_strings(limit, offset)` — paginated string list
-- [ ] `get_sections()` — binary sections with permissions
-- [ ] `get_imports()` — imported functions
-- [ ] `get_exports()` — exported functions
-- [ ] `search(pattern)` — search for pattern in binary
+Always registered -- no gating setting (the core read-only use case). Operate on `binary_context.get_current_view()` (whichever binary is focused in the GUI; explicit `select_binary` comes in the administration phase).
+- [x] `get_function(name_or_addr, il_level)` — function metadata + disassembly/LLIL/MLIL/HLIL/LLIL_SSA/MLIL_SSA/HLIL_SSA
+- [x] `get_functions(limit, offset)` — paginated function list
+- [x] `get_symbols(limit, offset)` — all symbols with names, addresses, types
+- [x] `get_xrefs_to(addr)` — cross-references to an address
+- [x] `get_xrefs_from(addr)` — cross-references from an address
+- [x] `get_types()` — all user-defined types
+- [x] `get_type(name)` — specific type definition
+- [x] `get_data(addr, size)` — raw bytes at address
+- [x] `get_strings(limit, offset)` — paginated string list
+- [x] `get_sections()` — binary sections with permissions (inferred from containing segment)
+- [x] `get_imports()` — imported functions/data
+- [x] `get_exports()` — exported (globally-bound) functions/data
+- [x] `search(pattern)` — search function/symbol names and defined strings for a substring or regex
 
 ## MCP Tools (write — safe)
 Gated by `mcp_server.write_enabled` (default **on**) — low-risk, easily reversible operations.
@@ -95,11 +96,11 @@ Gated by `mcp_server.screenshot_enabled` (default **off**).
 - [ ] `capture_screenshot()` — captures the whole BN window, returned inline as MCP image content (useful when discussing something visually with the user)
 
 ## MCP Resources
-- [ ] `binary://metadata` — binary name, arch, platform, entry point, size
-- [ ] `binary://functions` — full function list
-- [ ] `binary://symbols` — full symbol table
-- [ ] `binary://types` — all type definitions
-- [ ] `binary://sections` — section list
+- [x] `binary://metadata` — binary name, arch, platform, entry point, size
+- [x] `binary://functions` — full function list
+- [x] `binary://symbols` — full symbol table
+- [x] `binary://types` — all type definitions
+- [x] `binary://sections` — section list
 - [ ] `binary://selected` — the currently selected binary (per `select_binary`)
 - [ ] `program://plugins` — lists installed plugins
 - [ ] `program://binaries` — lists loaded binaries
