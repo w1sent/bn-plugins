@@ -57,7 +57,7 @@ Gated by `mcp_server.write_enabled` (default **on**) — low-risk, easily revers
 
 ## MCP Tools (undo)
 Gated by its own setting `mcp_server.undo_enabled` (default **off**) — separate from safe-writes because it reverts BN's undo stack wholesale, including manual edits the human made in the GUI, not just AI/tool-made changes. Off by default so an agent can't silently discard the user's own work.
-- [ ] `undo_action(steps=1)` — reverts the last `steps` changes via BN's native undo mechanism (affects user changes too, not just tool-made ones)
+- [x] `undo_action(steps=1)` — reverts the last `steps` changes via BN's native undo mechanism (affects user changes too, not just tool-made ones)
 
 ## MCP Tools (write — destructive)
 Gated by `mcp_server.destructive_write_enabled` (default **off**) — can corrupt the file/analysis, unlike the safe-write tier.
@@ -94,7 +94,7 @@ Gated by `mcp_server.debugging_enabled` (default **off**).
 
 ## MCP Tools (GUI utility)
 Gated by `mcp_server.screenshot_enabled` (default **off**).
-- [ ] `capture_screenshot()` — captures the whole BN window, returned inline as MCP image content (useful when discussing something visually with the user)
+- [x] `capture_screenshot()` — captures the whole BN window, returned inline as MCP image content (useful when discussing something visually with the user)
 
 ## MCP Resources
 - [x] `binary://metadata` — binary name, arch, platform, entry point, size
