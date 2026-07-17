@@ -107,10 +107,11 @@ Gated by `mcp_server.screenshot_enabled` (default **off**).
 - [ ] `gui://status` — current user-interaction state: opened function, opened view, focused panel
 
 ## MCP Prompts
-- [ ] `analyze-function` — "Analyze the function at {addr} and explain what it does"
-- [ ] `find-crypto` — "Find cryptographic routines in this binary"
-- [ ] `suggest-names` — "Suggest meaningful names for unnamed functions"
-- [ ] `reverse-engineering` — "Help me reverse engineer this binary"
+Always registered -- templates for an AI client to send itself, no side effects, no gating setting.
+- [x] `analyze-function` — "Analyze the function at {addr} and explain what it does"
+- [x] `find-crypto` — "Find cryptographic routines in this binary"
+- [x] `suggest-names` — "Suggest meaningful names for unnamed functions"
+- [x] `reverse-engineering` — "Help me reverse engineer this binary"
 
 ## Settings (BN native)
 - [ ] `mcp_server.enabled` (bool, default `true`) — start server on BN load; in GUI this also controls autostart

@@ -17,7 +17,7 @@ from typing import Optional
 
 from binaryninja import Settings
 
-from . import reading, scripting, writing
+from . import prompts, reading, scripting, writing
 from .core.logging import get_logger
 from .server import MCPServer, generate_api_key
 
@@ -70,6 +70,7 @@ def _register_tools(mcp, settings) -> None:
     an MCP client never sees a tool it isn't allowed to use. Toggling a
     setting takes effect on the next server restart, not live."""
     reading.register(mcp)
+    prompts.register(mcp)
     if settings.get_bool("mcp_server.write_enabled"):
         writing.register(mcp)
     if settings.get_bool("mcp_server.scripting_enabled"):
