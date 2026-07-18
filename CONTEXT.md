@@ -81,3 +81,13 @@ _Avoid_: deployment, install artifact.
 **Python** is the primary language for all plugins and `core/`. Use **C++**
 only when performance demands it, and expose it as a Python module so
 plugins consume it through the same Python interface.
+
+## Developing and testing plugins
+
+Agents developing or debugging a plugin should use the `binja-mcp` MCP
+server to interact with a live Binary Ninja instance and test the plugin
+themselves, rather than relying on static reading of the code. It exposes
+API-search (`search_docs`) and an `execute_script` command for iterating
+against the live BN API interactively. `binja-mcp` requires a running BN
+instance — if one isn't already up, start it first before using the other
+`binja-mcp` tools.
