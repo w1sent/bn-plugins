@@ -15,6 +15,11 @@ into a BN-idiomatic plugin.
 - [ ] Primary: analysis pass on ELF — check for Flutter markers (libapp.so symbols, Dart VM sections)
 - [ ] Fallback: manual "Load Flutter Metadata" command
 - [ ] Silent no-op for non-Flutter binaries
+- [ ] Per ADR-0028: register the same detection check with
+      `core/framework_status.register_framework_indicator("flutter", "Flutter",
+      "🧩", detect_fn)` so a `🧩 Flutter` status bar indicator lights up on
+      match (see `frameworks/dotnet-native-aot/__init__.py`'s
+      `_has_rtr_module` for the pattern)
 
 ## BN database enrichment
 - [ ] Rename functions: `func.name = dart_name`
