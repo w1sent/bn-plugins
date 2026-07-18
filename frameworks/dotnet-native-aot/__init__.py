@@ -9,6 +9,7 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 from binaryninja import PluginCommand
 from binaryninja.interaction import show_message_box
 
+from .core.framework_status import register_framework_indicator
 from .core.logging import get_logger
 from .core.settings import register_setting
 from .core.tags import create_tag_type, tag_item
@@ -139,5 +140,7 @@ PluginCommand.register(
     _run_recover,
     _is_64bit,
 )
+
+register_framework_indicator("dotnet_native_aot", ".NET NativeAOT", "🧩", _has_rtr_module)
 
 logger.info("dotnet-native-aot loaded")

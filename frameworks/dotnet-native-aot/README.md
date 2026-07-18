@@ -27,6 +27,17 @@ can take a while); Binary Ninja stays responsive. A tag (`NativeAOT
 Recovered`, one per module header) and a log summary (counts + warnings)
 are left when it finishes.
 
+## Status bar indicator
+
+Whenever the same RTR detection used for auto-detection above finds a
+ReadyToRun directory in the currently focused binary view, a small
+`🧩 .NET NativeAOT` label appears in Binary Ninja's status bar (next to the
+native platform/architecture indicator), and updates live as you switch
+tabs. This is a shared mechanism (`core/framework_status.py`) other
+framework plugins in this repo can register into as well -- there's no
+plugin extension point for Binary Ninja's Triage view, so it's status-bar
+only, not injected into Triage's header/summary section.
+
 ## What it does
 
 1. **Locates the ReadyToRun directory** -- first by symbol (`__ReadyToRunHeader`,
