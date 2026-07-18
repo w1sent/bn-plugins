@@ -101,6 +101,7 @@ def start_server(*, host: Optional[str] = None, port: Optional[int] = None) -> M
         _server = MCPServer(resolved_host, resolved_port, get_api_key=_current_api_key)
         _register_tools(_server.mcp, settings)
         _server.start()
+        gui.set_server_running(True, resolved_host, resolved_port)
         return _server
 
 
@@ -114,6 +115,7 @@ def stop_server(server: Optional[MCPServer] = None) -> None:
         target.stop()
         if target is _server:
             _server = None
+        gui.set_server_running(False)
 
 
 def get_server_status() -> ServerStatus:

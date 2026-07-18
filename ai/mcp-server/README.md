@@ -191,6 +191,12 @@ open):
 | Stop Server | Stop the MCP server |
 | Copy API Key | Copy the current API key to the clipboard |
 
+## Status bar indicator
+
+A small `MCP :<port>` label appears in Binary Ninja's main window status bar
+while the server is running (hover for host/port), and disappears entirely
+when it's stopped. Not gated by any setting -- it just mirrors server state.
+
 ## API (`api.py`)
 
 ```python
@@ -207,7 +213,12 @@ Call `api.help()` in BN's Python console for the full docstring.
 `scripts/install_mcp_clients.py` configures Claude Code, Codex, OpenCode, and
 DeepAgents to talk to a running instance of this server -- see that script's
 `--help` for usage. It appends to each tool's existing config rather than
-overwriting it.
+overwriting it. For Claude Code, it also installs `skills/binja-mcp/SKILL.md`
+into `~/.claude/skills/binja-mcp` -- a skill covering which tool to reach for
+in common reversing scenarios (getting oriented, hunting crypto, patching,
+scripting, debugging PIE binaries, ...). MCP itself has no skill-registration
+primitive (only tools/resources/prompts), so this is a plain file copy, not
+something registered over the protocol; pass `--no-skill` to skip it.
 
 To configure a client manually: the server listens at
 `http://<bind_address>:<http_port>/mcp` (defaults to

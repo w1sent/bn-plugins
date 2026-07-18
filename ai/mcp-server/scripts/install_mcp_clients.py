@@ -12,6 +12,12 @@ unrelated content). DeepAgents has no CLI or standard config file --
 small JSON file under our own convention (see --deepagents-config) for you
 to load yourself.
 
+When claude-code is among the configured clients, this also installs a
+bundled Claude Code skill (skills/binja-mcp/SKILL.md) that documents which
+binja-mcp tool to use for common reversing scenarios -- MCP itself has no
+skill-registration mechanism, so this just copies the file into Claude
+Code's skills directory (see --skill-dest, --no-skill).
+
 Usage:
     python install_mcp_clients.py --api-key KEY
     python install_mcp_clients.py --api-key KEY --clients claude-code,opencode
@@ -32,6 +38,7 @@ from pathlib import Path
 _DEFAULT_URL = "http://127.0.0.1:9090/mcp"
 _DEFAULT_NAME = "binja-mcp"
 _ALL_CLIENTS = ("claude-code", "codex", "opencode", "deepagents")
+_SKILL_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-mcp" / "SKILL.md"
 
 
 class Result:
@@ -183,6 +190,21 @@ def configure_deepagents(name: str, url: str, api_key: str, config_path: Path, d
     )
 
 
+def install_skill(dest_dir: Path, dry_run: bool) -> Result:
+    """Claude Code skills have no MCP-level registration mechanism (the MCP
+    protocol only has tools/resources/prompts) -- so this just copies the
+    bundled SKILL.md into Claude Code's user-level skills directory, the same
+    way a human would install a skill by hand."""
+    if not _SKILL_SRC.exists():
+        return Result("claude-code-skill", "error", f"bundled skill not found at {_SKILL_SRC}")
+    dest = dest_dir / "SKILL.md"
+    if dry_run:
+        return Result("claude-code-skill", "ok", f"[dry-run] would copy {_SKILL_SRC} -> {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_SKILL_SRC, dest)
+    return Result("claude-code-skill", "ok", f"installed skill to {dest}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", default=_DEFAULT_URL, help=f"MCP endpoint URL (default: {_DEFAULT_URL})")
@@ -206,6 +228,14 @@ def main() -> int:
         "--deepagents-config",
         default=str(Path.home() / ".config" / "deepagents" / "mcp_config.json"),
         help="Where to write/merge the DeepAgents-convention JSON config",
+    )
+    parser.add_argument(
+        "--skill-dest",
+        default=str(Path.home() / ".claude" / "skills" / "binja-mcp"),
+        help="Where to install the binja-mcp Claude Code skill (default: ~/.claude/skills/binja-mcp)",
+    )
+    parser.add_argument(
+        "--no-skill", action="store_true", help="Don't install the binja-mcp Claude Code skill"
     )
     parser.add_argument("--dry-run", action="store_true", help="Print what would change without writing anything")
     args = parser.parse_args()
@@ -231,6 +261,8 @@ def main() -> int:
         results.append(
             configure_deepagents(args.name, args.url, api_key, Path(args.deepagents_config), args.dry_run)
         )
+    if "claude-code" in clients and not args.no_skill:
+        results.append(install_skill(Path(args.skill_dest), args.dry_run))
 
     print()
     for r in results:
