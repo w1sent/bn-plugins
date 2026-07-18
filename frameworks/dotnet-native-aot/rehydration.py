@@ -117,6 +117,39 @@ _COMMAND_NAMES = {
 }
 
 
+def _ensure_writable_backing(bv, start, length):
+    """The hydration target is normally a zero-initialized (`.bss`-style)
+    segment with no file backing (`data_length == 0`) -- `BinaryView.write`
+    silently no-ops there since there's nothing in the parent view to patch.
+    Give every such segment overlapping [start, start+length) real backing
+    bytes (appended to the raw/parent view) so writes actually land."""
+
+    end = start + length
+    addr = start
+    while addr < end:
+        segment = bv.get_segment_at(addr)
+        if segment is None:
+            raise ValueError(f"{addr:#x}: no segment covers the hydration target")
+
+        if segment.data_length == 0:
+            from binaryninja.enums import SegmentFlag
+
+            flags = SegmentFlag.SegmentContainsData
+            if segment.readable:
+                flags |= SegmentFlag.SegmentReadable
+            if segment.writable:
+                flags |= SegmentFlag.SegmentWritable
+            if segment.executable:
+                flags |= SegmentFlag.SegmentExecutable
+
+            raw = bv.parent_view or bv
+            new_offset = raw.end
+            raw.insert(new_offset, b"\x00" * segment.length)
+            bv.add_user_segment(segment.start, segment.length, new_offset, segment.length, flags)
+
+        addr = segment.end
+
+
 def rehydrate(bv, dehydrated_start, dehydrated_end, on_progress=None, annotate=False):
     """Decode the dehydrated data command stream at
     [dehydrated_start, dehydrated_end) and materialize the hydrated bytes
@@ -183,6 +216,7 @@ def rehydrate(bv, dehydrated_start, dehydrated_end, on_progress=None, annotate=F
         else:
             raise ValueError(f"{cursor.address:#x}: unknown dehydration opcode {command}")
 
+    _ensure_writable_backing(bv, hydration_base, len(hydrated))
     written = bv.write(hydration_base, bytes(hydrated))
     if written != len(hydrated):
         raise ValueError(
