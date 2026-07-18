@@ -1,0 +1,1 @@
+# (no third-party deps beyond BN API + core -- PySide6/binaryninjaui are provided by BN itself)

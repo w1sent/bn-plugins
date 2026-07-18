@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Node Canvas",
+  "type": ["ui"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "A user-curated, freeform graph workspace: hand-place and group nodes bound to BN addresses, auto-populate call trees and xref graphs, and persist/export/import the canvas alongside the binary",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}
