@@ -19,7 +19,8 @@ cross-checked against its IDA port.
 
 | Command | Context | Description |
 |---|---|---|
-| NativeAOT \| Recover Metadata | Toolbar / Command palette | Locate all RTR modules and run full recovery |
+| NativeAOT \| Recover Metadata | Toolbar / Command palette | Locate all RTR modules and run full recovery. Only shown when a ReadyToRun directory is actually detected (see `auto_detect_rtr` below). |
+| NativeAOT \| Recover Metadata (Force) | Toolbar / Command palette | Same command, always shown on 64-bit binaries -- use this if auto-detection missed a real NativeAOT binary. |
 
 Recovery runs on a background thread (the whole-binary pointer scan/crawl
 can take a while); Binary Ninja stays responsive. A tag (`NativeAOT
@@ -64,6 +65,7 @@ are left when it finishes.
 |---|---|---|---|
 | `dotnet_native_aot.annotate_frozen_objects` | bool | `true` | Recover frozen strings/arrays/boxed values |
 | `dotnet_native_aot.mark_rehydration_code` | bool | `false` | Leave an EOL comment on every dehydration opcode while decompressing (.NET 8+) |
+| `dotnet_native_aot.auto_detect_rtr` | bool | `true` | Only show NativeAOT \| Recover Metadata when a ReadyToRun directory is actually detected (symbol lookup, then a signature scan of non-executable data segments). Turning it off makes the plain command behave like the always-shown Force variant. |
 
 ## Scripting (`api.py`)
 

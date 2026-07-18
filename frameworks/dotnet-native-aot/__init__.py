@@ -13,7 +13,7 @@ from .core.logging import get_logger
 from .core.settings import register_setting
 from .core.tags import create_tag_type, tag_item
 
-from . import api
+from . import api, rtr
 
 logger = get_logger("dotnet_native_aot")
 
@@ -28,6 +28,13 @@ register_setting(
     "dotnet_native_aot.mark_rehydration_code",
     "Leave an EOL comment on every dehydration opcode while decompressing metadata (.NET 8+)",
     False,
+)
+register_setting(
+    "dotnet_native_aot.auto_detect_rtr",
+    "Only show NativeAOT | Recover Metadata when a ReadyToRun directory is actually "
+    "detected in the binary. Turn off if detection misses a real NativeAOT binary -- "
+    "the NativeAOT | Recover Metadata (Force) command is always shown regardless.",
+    True,
 )
 
 
@@ -81,16 +88,56 @@ def _run_recover(bv):
     )
 
 
-def _is_valid(bv):
+def _has_rtr_module(bv):
+    """Cached (per-bv, session-only) check for whether a ReadyToRun
+    directory is actually present -- locate_modules' signature-scan
+    fallback walks every non-executable data segment, so this is worth
+    memoizing since _is_valid can be re-queried on every menu open."""
+
+    cached = bv.session_data.get("dotnet_native_aot.has_rtr_module")
+    if cached is not None:
+        return cached
+
+    try:
+        found = bool(rtr.locate_modules(bv))
+    except Exception:
+        found = False
+
+    bv.session_data["dotnet_native_aot.has_rtr_module"] = found
+    return found
+
+
+def _is_64bit(bv):
     return bv.address_size == 8
+
+
+def _is_valid_auto(bv):
+    if not _is_64bit(bv):
+        return False
+
+    from binaryninja import Settings
+
+    if not Settings().get_bool("dotnet_native_aot.auto_detect_rtr"):
+        return True
+    return _has_rtr_module(bv)
 
 
 PluginCommand.register(
     "NativeAOT\\Recover Metadata",
     "Locate ReadyToRun module headers, recover the MethodTable/EEType type hierarchy, "
-    "name virtual methods, and annotate frozen strings/arrays/boxed values.",
+    "name virtual methods, and annotate frozen strings/arrays/boxed values. Shown only "
+    "when a ReadyToRun directory is detected (see the auto_detect_rtr setting).",
     _run_recover,
-    _is_valid,
+    _is_valid_auto,
+)
+
+PluginCommand.register(
+    "NativeAOT\\Recover Metadata (Force)",
+    "Same as NativeAOT | Recover Metadata, but always shown on 64-bit binaries -- use this "
+    "if auto-detection didn't find a ReadyToRun directory but you believe this is a "
+    "NativeAOT binary anyway.",
+    _run_recover,
+    _is_64bit,
 )
 
 logger.info("dotnet-native-aot loaded")
