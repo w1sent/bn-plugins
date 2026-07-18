@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -22,7 +22,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsRectItem,
@@ -30,9 +34,11 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
+    QMessageBox,
+    QSpinBox,
     QTabBar,
     QToolButton,
     QVBoxLayout,
@@ -55,6 +61,8 @@ _UNRESOLVED_ICON = "⚠"  # ⚠ -- marks an address that no longer resolves
 _ARROW_SIZE = 9
 _NODE_CLIP_MARGIN = 24
 _BOX_CLIP_MARGIN = 12
+_GROUP_PADDING = 20
+_GROUP_LABEL_HEIGHT = 16
 
 # canvas identity -> open CanvasWidget, so api.export_image() can find a
 # live scene to rasterize (image export inherently needs a rendered view).
@@ -69,6 +77,82 @@ def _climb_to(item, cls):
     while item is not None and not isinstance(item, cls):
         item = item.parentItem()
     return item
+
+
+def _text_color_for_background(bg: QColor) -> str:
+    luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+    return "#000000" if luminance > 140 else "#ffffff"
+
+
+# -- form dialog (replaces chains of QInputDialogs) ----------------------
+
+
+def _field(key, label, kind="text", default="", choices=None, range=None, decimals=1):
+    return {
+        "key": key, "label": label, "kind": kind, "default": default,
+        "choices": choices, "range": range, "decimals": decimals,
+    }
+
+
+class FormDialog(QDialog):
+    """A single-form dialog for multi-field add/edit actions -- one OK/
+    Cancel round trip instead of a chain of QInputDialogs."""
+
+    def __init__(self, parent, title: str, fields: list[dict]):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._widgets = {}
+
+        form = QFormLayout()
+        for spec in fields:
+            kind = spec["kind"]
+            default = spec["default"]
+            if kind == "choice":
+                w = QComboBox()
+                w.addItems(spec["choices"] or [])
+                if default in (spec["choices"] or []):
+                    w.setCurrentText(default)
+            elif kind == "int":
+                w = QSpinBox()
+                lo, hi = spec["range"] or (0, 1000000)
+                w.setRange(lo, hi)
+                w.setValue(int(default) if default != "" else lo)
+            elif kind == "float":
+                w = QDoubleSpinBox()
+                lo, hi = spec["range"] or (0.0, 1000.0)
+                w.setRange(lo, hi)
+                w.setDecimals(spec["decimals"])
+                w.setValue(float(default) if default != "" else lo)
+            else:  # "text"
+                w = QLineEdit(str(default or ""))
+            self._widgets[spec["key"]] = w
+            form.addRow(spec["label"], w)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict:
+        result = {}
+        for key, w in self._widgets.items():
+            if isinstance(w, QComboBox):
+                result[key] = w.currentText()
+            elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+                result[key] = w.value()
+            else:
+                result[key] = w.text()
+        return result
+
+    @staticmethod
+    def get(parent, title: str, fields: list[dict]):
+        dlg = FormDialog(parent, title, fields)
+        if dlg.exec() == QDialog.Accepted:
+            return dlg.values()
+        return None
 
 
 class NodeItem(QGraphicsRectItem):
@@ -116,43 +200,90 @@ class NodeItem(QGraphicsRectItem):
             self.node.x = self.pos().x()
             self.node.y = self.pos().y()
             self._canvas_widget.reposition_edges_for(self.node)
+            if self.node.group is not None and not self._canvas_widget._suspend_resize:
+                self._canvas_widget.resize_boundary_for(self.node.group)
         return super().itemChange(change, value)
 
     def mouseDoubleClickEvent(self, event):
-        self._canvas_widget.navigate_to_node(self.node)
         super().mouseDoubleClickEvent(event)
+        self._canvas_widget.navigate_to_node(self.node)
 
 
 class GroupBoxItem(QGraphicsRectItem):
     """Renders both a collapsed group's representative box (hides its
-    members, sits at the default z-order) and an expanded group's
-    boundary outline (drawn behind its still-visible members -- see
-    CanvasWidget.rebuild_scene, which sets z=-1 for the latter)."""
+    members) and an expanded group's boundary outline (drawn behind its
+    still-visible members -- see CanvasWidget.rebuild_scene, which sets
+    z=-1 for the latter).
 
-    def __init__(self, group: Group, canvas_widget: "CanvasWidget", rect: QRectF):
-        super().__init__(rect)
+    Movable: dragging the box translates every (possibly nested) member
+    node by the same delta (see CanvasWidget.translate_group). Dragging a
+    member node the other way auto-grows/shrinks the box to keep fitting
+    it -- see CanvasWidget.resize_boundary_for -- so a node is never
+    visually "outside" its group's box; the box just always equals the
+    padded bounding rect of its members.
+    """
+
+    def __init__(self, group: Group, canvas_widget: "CanvasWidget", x: float, y: float, width: float, height: float):
+        super().__init__(0, 0, width, height)
         self.group = group
         self._canvas_widget = canvas_widget
+        self._user_dragging = False
+        self.setPos(x, y)
+        self._last_pos = QPointF(x, y)
         self.setZValue(1)
-        color = QColor(group.color or _DEFAULT_GROUP_COLOR)
-        color.setAlpha(60 if not group.collapsed else 90)
-        self.setBrush(QBrush(color))
-        self.setPen(QPen(QColor(group.color or _DEFAULT_GROUP_COLOR), 2, Qt.DashLine))
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self._apply_style()
 
-        label = QGraphicsSimpleTextItem(f"{group.name} ({'+' if group.collapsed else '-'})", self)
-        label.setPos(rect.x() + 4, rect.y() + 2)
+        self._label_item = QGraphicsSimpleTextItem(self)
+        self._label_item.setPos(4, 2)
         font = QFont()
         font.setBold(True)
-        label.setFont(font)
+        self._label_item.setFont(font)
+        self.refresh_label()
+
+    def _apply_style(self):
+        color = QColor(self.group.color or _DEFAULT_GROUP_COLOR)
+        color.setAlpha(90 if self.group.collapsed else 60)
+        self.setBrush(QBrush(color))
+        self.setPen(QPen(QColor(self.group.color or _DEFAULT_GROUP_COLOR), 2, Qt.DashLine))
+
+    def refresh_label(self):
+        self._label_item.setText(f"{self.group.name} ({'+' if self.group.collapsed else '-'})")
+
+    def set_geometry(self, x: float, y: float, width: float, height: float):
+        self.setRect(0, 0, width, height)
+        self.setPos(x, y)
+
+    def mousePressEvent(self, event):
+        self._user_dragging = True
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._user_dragging = False
+        super().mouseReleaseEvent(event)
+        self._canvas_widget._save()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            delta = value - self._last_pos
+            self._last_pos = value
+            if self._user_dragging and (delta.x() or delta.y()):
+                self._canvas_widget.translate_group(self.group, delta.x(), delta.y())
+        return super().itemChange(change, value)
 
     def mouseDoubleClickEvent(self, event):
+        # super() first: collapse/expand triggers a full scene rebuild
+        # that destroys this item, so nothing may touch `self` afterward.
+        super().mouseDoubleClickEvent(event)
         canvas = self._canvas_widget.canvas
         if self.group.collapsed:
             canvas.expand_group(self.group)
         else:
             canvas.collapse_group(self.group)
-        super().mouseDoubleClickEvent(event)
 
 
 class EdgeItem(QGraphicsPathItem):
@@ -202,27 +333,70 @@ class EdgeItem(QGraphicsPathItem):
         self.setPath(path)
 
 
-class LegendItem(QGraphicsRectItem):
-    def __init__(self, index: int, color: str, label: str, canvas_widget: "CanvasWidget"):
-        super().__init__(0, 0, 220, 18)
-        self.index = index
+class LegendContainerItem(QGraphicsRectItem):
+    """The whole legend as one draggable item -- individual entries are
+    non-interactive child items purely for rendering; this container does
+    its own hit-testing (by y-offset) for double-click/context-menu."""
+
+    ENTRY_HEIGHT = 20
+
+    def __init__(self, canvas_widget: "CanvasWidget", entries: list[tuple[str, str]], x: float, y: float):
+        width = 220
+        height = max(1, len(entries)) * self.ENTRY_HEIGHT + 8
+        super().__init__(0, 0, width, height)
         self._canvas_widget = canvas_widget
-        self.setPen(QPen(Qt.NoPen))
-        self.setBrush(QBrush(Qt.transparent))
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self._entry_count = len(entries)
+        self.setPos(x, y)
         self.setZValue(10)
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemSendsGeometryChanges
+            | QGraphicsItem.ItemIgnoresTransformations
+        )
 
-        swatch = QGraphicsRectItem(0, 3, 12, 12, self)
-        swatch.setBrush(QBrush(QColor(color)))
-        swatch.setPen(QPen(QColor("#222222")))
+        bg = canvas_widget.palette().color(canvas_widget.backgroundRole())
+        text_color = _text_color_for_background(bg)
+        panel = QColor(bg)
+        panel.setAlpha(160)
+        self.setBrush(QBrush(panel))
+        self.setPen(QPen(QColor("#888888")))
 
-        text = QGraphicsSimpleTextItem(label, self)
-        text.setPos(18, 0)
+        for i, (color, label) in enumerate(entries):
+            y_off = 4 + i * self.ENTRY_HEIGHT
+            swatch = QGraphicsRectItem(4, y_off + 3, 12, 12, self)
+            swatch.setBrush(QBrush(QColor(color)))
+            swatch.setPen(QPen(QColor("#222222")))
+            swatch.setAcceptedMouseButtons(Qt.NoButton)
+
+            text = QGraphicsSimpleTextItem(label, self)
+            text.setPos(22, y_off)
+            text.setBrush(QBrush(QColor(text_color)))
+            text.setAcceptedMouseButtons(Qt.NoButton)
+
+    def index_at(self, local_pos: QPointF):
+        index = int((local_pos.y() - 4) // self.ENTRY_HEIGHT)
+        if 0 <= index < self._entry_count:
+            return index
+        return None
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            # Direct mutation, no notify -- same reasoning as NodeItem:
+            # avoid a mid-drag scene rebuild. Persisted on mouse release.
+            self._canvas_widget.canvas.legend_x = value.x()
+            self._canvas_widget.canvas.legend_y = value.y()
+        return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._canvas_widget._save()
 
     def mouseDoubleClickEvent(self, event):
-        self._canvas_widget._action_edit_legend_entry(self.index)
         super().mouseDoubleClickEvent(event)
+        index = self.index_at(event.pos())
+        if index is not None:
+            self._canvas_widget._action_edit_legend_entry(index)
 
 
 class CanvasWidget(QGraphicsView):
@@ -239,7 +413,9 @@ class CanvasWidget(QGraphicsView):
         self.canvas: Canvas | None = None
         self._node_items: dict[int, NodeItem] = {}
         self._edge_items: dict[int, EdgeItem] = {}
-        self._legend_items: list[LegendItem] = []
+        self._group_items: dict[int, GroupBoxItem] = {}
+        self._legend_container: LegendContainerItem | None = None
+        self._suspend_resize = False
         self._panning = False
         self._pan_start = QPointF()
 
@@ -277,23 +453,25 @@ class CanvasWidget(QGraphicsView):
         self._scene.clear()
         self._node_items.clear()
         self._edge_items.clear()
-        self._legend_items.clear()
+        self._group_items.clear()
+        self._legend_container = None
         if self.canvas is None:
             return
 
         visible = self.canvas.visible_graph()
 
         for group in visible.expanded_boundaries:
-            rect = self._group_bounds(group)
-            boundary = GroupBoxItem(group, self, rect)
+            x, y, w, h = self._group_bounds(group)
+            boundary = GroupBoxItem(group, self, x, y, w, h)
             boundary.setZValue(-1)
             self._scene.addItem(boundary)
+            self._group_items[group.id] = boundary
 
         for group in visible.boxes:
-            rect = self._group_bounds(group)
-            box = GroupBoxItem(group, self, rect)
+            x, y, w, h = self._group_bounds(group)
+            box = GroupBoxItem(group, self, x, y, w, h)
             self._scene.addItem(box)
-            self._node_items[f"group:{group.id}"] = box
+            self._group_items[group.id] = box
 
         for node in visible.nodes:
             item = NodeItem(node, self)
@@ -319,10 +497,10 @@ class CanvasWidget(QGraphicsView):
         if isinstance(element, Node):
             return self._node_items.get(element.id)
         if isinstance(element, Group):
-            return self._node_items.get(f"group:{element.id}")
+            return self._group_items.get(element.id)
         return None
 
-    def _group_bounds(self, group: Group) -> QRectF:
+    def _group_bounds(self, group: Group) -> tuple[float, float, float, float]:
         xs, ys = [], []
 
         def collect(g: Group):
@@ -334,20 +512,74 @@ class CanvasWidget(QGraphicsView):
 
         collect(group)
         if not xs:
-            xs, ys = [group.id * 20], [0]
-        pad = 20
-        return QRectF(min(xs) - pad, min(ys) - pad - 16, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad + 16)
+            xs, ys = [0.0, 0.0], [0.0, 0.0]
+        x = min(xs) - _GROUP_PADDING
+        y = min(ys) - _GROUP_PADDING - _GROUP_LABEL_HEIGHT
+        w = (max(xs) - min(xs)) + 2 * _GROUP_PADDING
+        h = (max(ys) - min(ys)) + 2 * _GROUP_PADDING + _GROUP_LABEL_HEIGHT
+        return x, y, w, h
+
+    def resize_boundary_for(self, group: Group):
+        """Re-fit `group`'s box (and every ancestor's) to its members'
+        current bounding rect. Safe to call while a NodeItem drag is live:
+        GroupBoxItem only cascades a *move* to its members when it itself
+        is the one being dragged (see GroupBoxItem._user_dragging)."""
+        while group is not None:
+            box = self._group_items.get(group.id)
+            if box is not None:
+                x, y, w, h = self._group_bounds(group)
+                box.set_geometry(x, y, w, h)
+            group = group.parent
+
+    def translate_group(self, group: Group, dx: float, dy: float):
+        """Rigidly move every (possibly nested) member node of `group`,
+        and every nested child group's box, by the same delta -- called
+        when the user drags the group's box. A rigid shift never changes
+        any box's size, so resize_boundary_for is suppressed for the
+        whole subtree being moved (it would otherwise recompute bounds
+        from a half-updated set of node positions mid-loop and cascade
+        back into another translate_group call via the moved boxes'
+        own itemChange). Ancestors *outside* `group` do need a resize
+        once the shift is complete, since their bounding box genuinely
+        changes -- that happens after, unsuppressed."""
+
+        def all_nodes(g: Group):
+            result = list(g.member_nodes)
+            for child in g.child_groups:
+                result.extend(all_nodes(child))
+            return result
+
+        def all_child_groups(g: Group):
+            result = []
+            for child in g.child_groups:
+                result.append(child)
+                result.extend(all_child_groups(child))
+            return result
+
+        self._suspend_resize = True
+        try:
+            for node in all_nodes(group):
+                node.x += dx
+                node.y += dy
+                item = self._node_items.get(node.id)
+                if item is not None:
+                    item.setPos(node.x, node.y)
+            for child in all_child_groups(group):
+                box = self._group_items.get(child.id)
+                if box is not None:
+                    box.setPos(box.pos().x() + dx, box.pos().y() + dy)
+        finally:
+            self._suspend_resize = False
+
+        if group.parent is not None:
+            self.resize_boundary_for(group.parent)
 
     def _draw_legend(self):
-        if self.canvas is None:
+        if self.canvas is None or not self.canvas.legend:
             return
-        y = 8
-        for index, (color, label) in enumerate(self.canvas.legend):
-            item = LegendItem(index, color, label, self)
-            item.setPos(8, y)
-            self._scene.addItem(item)
-            self._legend_items.append(item)
-            y += 20
+        container = LegendContainerItem(self, self.canvas.legend, self.canvas.legend_x, self.canvas.legend_y)
+        self._scene.addItem(container)
+        self._legend_container = container
 
     def reposition_edges_for(self, node: Node):
         node_item = self._node_items.get(node.id)
@@ -443,11 +675,16 @@ class CanvasWidget(QGraphicsView):
         menu = QMenu(self)
 
         menu.addAction("Add Node...", self._action_add_node)
+        menu.addAction("Add Memory Location...", self._action_add_memory_location)
 
         selected_nodes = [i.node for i in self._scene.selectedItems() if isinstance(i, NodeItem)]
         if selected_nodes:
             menu.addAction(f"Remove Selected ({len(selected_nodes)})", lambda: self._action_remove(selected_nodes))
             menu.addAction("Group Selected...", lambda: self._action_group(selected_nodes))
+            if self.canvas.groups:
+                menu.addAction("Add Selected to Group...", lambda: self._action_add_to_group(selected_nodes))
+            if any(n.group is not None for n in selected_nodes):
+                menu.addAction("Remove Selected from Group", lambda: self._action_remove_from_group(selected_nodes))
             if len(selected_nodes) == 2:
                 menu.addAction("Connect Selected", lambda: self._action_connect_selected(selected_nodes))
             if len(selected_nodes) == 1:
@@ -460,18 +697,22 @@ class CanvasWidget(QGraphicsView):
         if group_box is not None:
             action_label = "Expand Group" if group_box.group.collapsed else "Collapse Group"
             menu.addAction(action_label, lambda: self._toggle_group(group_box.group))
+            menu.addAction("Remove Group (keep nodes)", lambda: self._action_remove_group(group_box.group))
 
         edge_item = _climb_to(item, EdgeItem)
         if edge_item is not None:
             menu.addAction("Edit Edge...", lambda: self._action_edit_edge(edge_item))
 
-        legend_item = _climb_to(item, LegendItem)
-        if legend_item is not None:
-            menu.addSeparator()
-            menu.addAction("Edit Legend Entry...", lambda: self._action_edit_legend_entry(legend_item.index))
-            menu.addAction("Delete Legend Entry", lambda: self._action_delete_legend_entry(legend_item.index))
-            menu.addAction("Move Legend Entry Up", lambda: self._action_move_legend_entry(legend_item.index, -1))
-            menu.addAction("Move Legend Entry Down", lambda: self._action_move_legend_entry(legend_item.index, 1))
+        legend_container = _climb_to(item, LegendContainerItem)
+        if legend_container is not None:
+            local_pos = legend_container.mapFromScene(self.mapToScene(event.pos()))
+            index = legend_container.index_at(local_pos)
+            if index is not None:
+                menu.addSeparator()
+                menu.addAction("Edit Legend Entry...", lambda: self._action_edit_legend_entry(index))
+                menu.addAction("Delete Legend Entry", lambda: self._action_delete_legend_entry(index))
+                menu.addAction("Move Legend Entry Up", lambda: self._action_move_legend_entry(index, -1))
+                menu.addAction("Move Legend Entry Down", lambda: self._action_move_legend_entry(index, 1))
 
         menu.addSeparator()
         menu.addAction("Relayout (selection or all)...", self._action_relayout_prompt)
@@ -499,19 +740,61 @@ class CanvasWidget(QGraphicsView):
             self.canvas.collapse_group(group)
 
     def _action_add_node(self):
-        label, ok = QInputDialog.getText(self, "Add Node", "Label:")
-        if ok and label:
+        values = FormDialog.get(self, "Add Node", [_field("label", "Label")])
+        if values and values["label"]:
             pos = self.mapToScene(self.viewport().rect().center())
-            self.canvas.add_node(label, x=pos.x(), y=pos.y())
+            self.canvas.add_node(values["label"], x=pos.x(), y=pos.y())
+
+    def _action_add_memory_location(self):
+        default_addr = ""
+        try:
+            import binaryninjaui as ui
+
+            ctx = ui.UIContext.activeContext()
+            vf = ctx.getCurrentViewFrame() if ctx else None
+            if vf is not None:
+                start, _ = vf.getSelectionOffsets()
+                default_addr = f"{start:#x}"
+        except Exception:
+            pass
+
+        values = FormDialog.get(self, "Add Memory Location", [_field("address", "Address (hex)", default=default_addr)])
+        if not values or not values["address"]:
+            return
+        try:
+            text = values["address"]
+            addr = int(text, 16) if text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            QMessageBox.warning(self, "Add Memory Location", f"Not a valid address: {values['address']!r}")
+            return
+        self.canvas.add_node(f"{addr:#x}", address=addr)
 
     def _action_remove(self, nodes):
         for node in nodes:
             self.canvas.remove_node(node)
 
     def _action_group(self, nodes):
-        name, ok = QInputDialog.getText(self, "Group Selected", "Group name:")
-        if ok and name:
-            self.canvas.group_nodes(nodes, name)
+        values = FormDialog.get(self, "Group Selected", [
+            _field("name", "Group name"),
+            _field("color", "Color (#rrggbb)", default=_DEFAULT_GROUP_COLOR),
+        ])
+        if values and values["name"]:
+            self.canvas.group_nodes(nodes, values["name"], color=values["color"] or None)
+
+    def _action_add_to_group(self, nodes):
+        names = [g.name for g in self.canvas.groups.values()]
+        values = FormDialog.get(self, "Add to Group", [_field("group", "Group", "choice", names[0], choices=names)])
+        if not values:
+            return
+        group = next((g for g in self.canvas.groups.values() if g.name == values["group"]), None)
+        if group is not None:
+            self.canvas.add_nodes_to_group(nodes, group)
+
+    def _action_remove_from_group(self, nodes):
+        self.canvas.remove_nodes_from_group(nodes)
+
+    def _action_remove_group(self, group):
+        self.canvas.remove_group(group, keep_members=True)
 
     def _action_connect_selected(self, nodes):
         if len(nodes) != 2:
@@ -520,18 +803,16 @@ class CanvasWidget(QGraphicsView):
         logger.info("canvas %r: connected node %d -> node %d", self.canvas.name, nodes[0].id, nodes[1].id)
 
     def _action_edit_node(self, node: Node):
-        label, ok = QInputDialog.getText(self, "Edit Node", "Label:", text=node.label)
-        if not ok:
+        values = FormDialog.get(self, "Edit Node", [
+            _field("label", "Label", default=node.label),
+            _field("color", "Fill color (#rrggbb, blank = default)", default=node.color or ""),
+            _field("border_color", "Border color (#rrggbb, blank = default)", default=node.border_color or ""),
+        ])
+        if not values:
             return
-        color, ok = QInputDialog.getText(self, "Edit Node", "Fill color (#rrggbb, blank = default):", text=node.color or "")
-        if not ok:
-            return
-        border_color, ok = QInputDialog.getText(self, "Edit Node", "Border color (#rrggbb, blank = default):", text=node.border_color or "")
-        if not ok:
-            return
-        self.canvas.set_node_label(node, label)
-        self.canvas.set_node_color(node, color or None)
-        self.canvas.set_node_border_color(node, border_color or None)
+        self.canvas.set_node_label(node, values["label"])
+        self.canvas.set_node_color(node, values["color"] or None)
+        self.canvas.set_node_border_color(node, values["border_color"] or None)
 
     def _action_edit_edge(self, edge_item: "EdgeItem"):
         if not edge_item.edges:
@@ -542,39 +823,35 @@ class CanvasWidget(QGraphicsView):
             # touches the first underlying Edge -- expand the group(s) to
             # edit the others individually.
             logger.debug("editing 1 of %d aggregated edges", len(edge_item.edges))
-        color, ok = QInputDialog.getText(self, "Edit Edge", "Color (#rrggbb, blank = default):", text=edge.color or "")
-        if not ok:
+        values = FormDialog.get(self, "Edit Edge", [
+            _field("color", "Color (#rrggbb, blank = default)", default=edge.color or ""),
+            _field("thickness", "Thickness", "float", edge.thickness, range=(0.5, 20.0)),
+            _field("direction", "Direction", "choice", "Directed" if edge.directed else "Undirected", choices=["Directed", "Undirected"]),
+        ])
+        if not values:
             return
-        thickness, ok = QInputDialog.getDouble(self, "Edit Edge", "Thickness:", edge.thickness, 0.5, 20.0, 1)
-        if not ok:
-            return
-        direction, ok = QInputDialog.getItem(
-            self, "Edit Edge", "Direction:", ["Directed", "Undirected"], 0 if edge.directed else 1, False,
-        )
-        if not ok:
-            return
-        self.canvas.set_edge_color(edge, color or None)
-        self.canvas.set_edge_thickness(edge, thickness)
-        self.canvas.set_edge_directed(edge, direction == "Directed")
+        self.canvas.set_edge_color(edge, values["color"] or None)
+        self.canvas.set_edge_thickness(edge, values["thickness"])
+        self.canvas.set_edge_directed(edge, values["direction"] == "Directed")
 
     def _action_add_callers(self, node: Node):
         from . import api
 
-        depth, ok = QInputDialog.getInt(self, "Add Callers", "Depth:", 2, 1, 10)
-        if ok:
-            api.add_callers(self.bv, self.canvas, node.address, depth=depth)
+        values = FormDialog.get(self, "Add Callers", [_field("depth", "Depth", "int", 2, range=(1, 10))])
+        if values:
+            api.add_callers(self.bv, self.canvas, node.address, depth=values["depth"])
 
     def _action_add_callees(self, node: Node):
         from . import api
 
-        depth, ok = QInputDialog.getInt(self, "Add Callees", "Depth:", 2, 1, 10)
-        if ok:
-            api.add_callees(self.bv, self.canvas, node.address, depth=depth)
+        values = FormDialog.get(self, "Add Callees", [_field("depth", "Depth", "int", 2, range=(1, 10))])
+        if values:
+            api.add_callees(self.bv, self.canvas, node.address, depth=values["depth"])
 
     def _action_relayout_prompt(self):
-        mode, ok = QInputDialog.getItem(self, "Relayout", "Mode:", ["Auto", "Dot", "Grid"], 0, False)
-        if ok:
-            self.relayout(mode=mode.lower())
+        values = FormDialog.get(self, "Relayout", [_field("mode", "Mode", "choice", "Auto", choices=["Auto", "Dot", "Grid"])])
+        if values:
+            self.relayout(mode=values["mode"].lower())
 
     def _action_export_image(self, scope):
         path, _ = QFileDialog.getSaveFileName(self, "Export Image", "", "PNG (*.png);;PDF (*.pdf)")
@@ -611,22 +888,21 @@ class CanvasWidget(QGraphicsView):
             api.import_json(self.canvas, path)
 
     def _action_add_legend_entry(self):
-        label, ok = QInputDialog.getText(self, "Add Legend Entry", "Label:")
-        if not ok or not label:
-            return
-        color, ok = QInputDialog.getText(self, "Add Legend Entry", "Color (#rrggbb):", text="#3d5a80")
-        if ok and color:
-            self.canvas.add_legend_entry(color, label)
+        values = FormDialog.get(self, "Add Legend Entry", [
+            _field("label", "Label"),
+            _field("color", "Color (#rrggbb)", default=_DEFAULT_NODE_COLOR),
+        ])
+        if values and values["label"] and values["color"]:
+            self.canvas.add_legend_entry(values["color"], values["label"])
 
     def _action_edit_legend_entry(self, index: int):
         color, label = self.canvas.legend[index]
-        new_label, ok = QInputDialog.getText(self, "Edit Legend Entry", "Label:", text=label)
-        if not ok or not new_label:
-            return
-        new_color, ok = QInputDialog.getText(self, "Edit Legend Entry", "Color (#rrggbb):", text=color)
-        if not ok or not new_color:
-            return
-        self.canvas.update_legend_entry(index, color=new_color, label=new_label)
+        values = FormDialog.get(self, "Edit Legend Entry", [
+            _field("label", "Label", default=label),
+            _field("color", "Color (#rrggbb)", default=color),
+        ])
+        if values and values["label"] and values["color"]:
+            self.canvas.update_legend_entry(index, color=values["color"], label=values["label"])
 
     def _action_delete_legend_entry(self, index: int):
         self.canvas.remove_legend_entry(index)
@@ -665,10 +941,26 @@ class CanvasWidget(QGraphicsView):
             image.save(path)
 
 
+class _ClosableTabBar(QTabBar):
+    """QTabBar has no built-in "middle-click to close" signal."""
+
+    middleClicked = Signal(int)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MiddleButton:
+            index = self.tabAt(event.pos())
+            if index >= 0:
+                self.middleClicked.emit(index)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+
 class CanvasPanel(QWidget):
     """Tab bar of open canvases (plus a trailing '+' tab to create a new
-    one) and a small toolbar (relayout + an expand toggle for zoom/layout-
-    mode controls), wrapped around a CanvasWidget."""
+    one, and middle-click to delete) and a small toolbar (relayout + an
+    expand toggle for zoom/layout-mode controls), wrapped around a
+    CanvasWidget."""
 
     def __init__(self, bv, parent=None):
         super().__init__(parent)
@@ -678,10 +970,11 @@ class CanvasPanel(QWidget):
         self._suppress_tab_signal = False
         self._plus_index = -1
 
-        self._tab_bar = QTabBar()
+        self._tab_bar = _ClosableTabBar()
         self._tab_bar.setExpanding(False)
         self._tab_bar.setDrawBase(False)
         self._tab_bar.currentChanged.connect(self._on_tab_changed)
+        self._tab_bar.middleClicked.connect(self._on_tab_middle_clicked)
 
         self._relayout_btn = QToolButton()
         self._relayout_btn.setText("⟳")  # ⟳
@@ -744,6 +1037,8 @@ class CanvasPanel(QWidget):
 
     def set_canvas(self, canvas: Canvas):
         self.canvas_view.set_canvas(canvas)
+        if self.bv is not None:
+            persistence.set_active_canvas_name(self.bv, canvas.name)
         self.refresh_tabs()
 
     def refresh_tabs(self):
@@ -766,6 +1061,7 @@ class CanvasPanel(QWidget):
             self._create_new_canvas()
             return
         name = self._tab_bar.tabText(index)
+        persistence.set_active_canvas_name(self.bv, name)
         if self.canvas_view.canvas is not None and self.canvas_view.canvas.name == name:
             return
         canvas = persistence.load_canvas(self.bv, name)
@@ -773,14 +1069,40 @@ class CanvasPanel(QWidget):
             logger.info("switched to canvas %r", name)
             self.canvas_view.set_canvas(canvas)
 
+    def _on_tab_middle_clicked(self, index):
+        if index == self._plus_index or index < 0 or self.bv is None:
+            return
+        name = self._tab_bar.tabText(index)
+        answer = QMessageBox.question(
+            self, "Delete Canvas", f"Delete canvas {name!r}? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        persistence.delete_canvas(self.bv, name)
+        logger.info("deleted canvas %r (middle-click)", name)
+
+        if self.canvas_view.canvas is not None and self.canvas_view.canvas.name == name:
+            remaining = persistence.list_canvas_names(self.bv)
+            if remaining:
+                next_canvas = persistence.load_canvas(self.bv, remaining[0])
+            else:
+                next_canvas = Canvas(persistence.generate_canvas_name(self.bv))
+                persistence.save_canvas(self.bv, next_canvas)
+            self.set_canvas(next_canvas)
+        else:
+            self.refresh_tabs()
+
     def _create_new_canvas(self):
-        name, ok = QInputDialog.getText(self, "New Canvas", "Name:")
-        if ok and name:
-            canvas = Canvas(name)
+        values = FormDialog.get(self, "New Canvas", [_field("name", "Name")])
+        if values and values["name"]:
+            canvas = Canvas(values["name"])
             persistence.save_canvas(self.bv, canvas)
-            logger.info("created canvas %r", name)
-            self.canvas_view.set_canvas(canvas)
-        self.refresh_tabs()  # also bounces selection off the '+' tab on cancel
+            logger.info("created canvas %r", canvas.name)
+            self.set_canvas(canvas)
+        else:
+            self.refresh_tabs()  # bounces selection off the '+' tab on cancel
 
     def _on_relayout_clicked(self):
         self.canvas_view.relayout(mode=self._mode_combo.currentText().lower())

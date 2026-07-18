@@ -169,6 +169,8 @@ class Canvas:
         self.edges: dict[int, Edge] = {}
         self.groups: dict[int, Group] = {}
         self.legend: list[tuple[str, str]] = []
+        self.legend_x: float = 8.0
+        self.legend_y: float = 8.0
         self._id_counter = itertools.count(1)
         self._observers: list[Callable[[str], None]] = []
         self._suppress_notify = False
@@ -292,7 +294,26 @@ class Canvas:
         if group.parent is not None:
             group.parent.child_groups.remove(group)
         del self.groups[group.id]
+        logger.debug("canvas %r: removed group %r (id=%d), kept its member nodes", self.name, group.name, group.id)
         self._notify("group_removed")
+
+    def add_nodes_to_group(self, nodes: list[Node], group: Group):
+        for node in nodes:
+            if node.group is group:
+                continue
+            if node.group is not None:
+                node.group.member_nodes.remove(node)
+            node.group = group
+            group.member_nodes.append(node)
+        self._notify("group_changed")
+
+    def remove_nodes_from_group(self, nodes: list[Node]):
+        for node in nodes:
+            if node.group is None:
+                continue
+            node.group.member_nodes.remove(node)
+            node.group = None
+        self._notify("group_changed")
 
     def collapse_group(self, group: Group):
         group.collapsed = True
@@ -321,6 +342,11 @@ class Canvas:
         entry = self.legend.pop(index)
         self.legend.insert(max(0, min(new_index, len(self.legend))), entry)
         self._notify("legend_changed")
+
+    def set_legend_position(self, x: float, y: float):
+        self.legend_x = x
+        self.legend_y = y
+        self._notify("legend_moved")
 
     # -- collapse-aware view --------------------------------------------
 
@@ -399,6 +425,8 @@ class Canvas:
             "edges": [e.to_dict() for e in self.edges.values()],
             "groups": [g.to_dict() for g in self.groups.values()],
             "legend": [{"color": c, "label": l} for c, l in self.legend],
+            "legend_x": self.legend_x,
+            "legend_y": self.legend_y,
         }
 
     @classmethod
@@ -459,6 +487,8 @@ class Canvas:
 
         for entry in data.get("legend", []):
             canvas.legend.append((entry["color"], entry["label"]))
+        canvas.legend_x = data.get("legend_x", 8.0)
+        canvas.legend_y = data.get("legend_y", 8.0)
 
         canvas._id_counter = itertools.count(max_id + 1)
         return canvas

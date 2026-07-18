@@ -15,30 +15,29 @@ from . import api, persistence
 
 logger = get_logger("node_canvas")
 
-_ACTIVE_CANVAS_KEY = "node_canvas.active_canvas_name"
-
 # One CanvasWidget per bv that currently has the sidebar panel open --
 # populated by CanvasSidebarWidget.__init__/closeEvent below. PluginCommand
 # actions mutate through this live widget's Canvas instance (never a
 # separately-loaded copy) so there's exactly one in-memory Canvas per bv,
 # matching widget.py's own observer-driven autosave.
-_widgets_by_bv: dict[int, "CanvasSidebarWidget"] = {}
+#
+# Keyed by bv.file.filename, not id(bv): BN can hand back a fresh Python
+# proxy object wrapping the same underlying BinaryView on different calls
+# (e.g. a PluginCommand callback's `bv` vs. the sidebar's `self.bv`), so
+# `id(bv)` is not a stable key across calls even for "the same" binary.
+_widgets_by_bv: dict[str, "CanvasSidebarWidget"] = {}
 
 
-def _generate_canvas_name(bv) -> str:
-    existing = set(persistence.list_canvas_names(bv))
-    i = 1
-    while f"canvas-{i}" in existing:
-        i += 1
-    return f"canvas-{i}"
+def _bv_key(bv) -> str:
+    return bv.file.filename
 
 
 def _load_or_create_active_canvas(bv):
-    name = bv.get_metadata(_ACTIVE_CANVAS_KEY, None)
+    name = persistence.get_active_canvas_name(bv)
     canvas = persistence.load_canvas(bv, name) if name else None
     if canvas is None:
-        canvas = api.create_canvas(bv, _generate_canvas_name(bv))
-        bv.store_metadata(_ACTIVE_CANVAS_KEY, canvas.name)
+        canvas = api.create_canvas(bv, persistence.generate_canvas_name(bv))
+        persistence.set_active_canvas_name(bv, canvas.name)
         logger.info("bv %r: no active canvas, created %r", bv.file.filename, canvas.name)
     return canvas
 
@@ -48,7 +47,7 @@ def _get_open_canvas_widget(bv):
     been opened at least once (see CanvasSidebarWidget registration
     below). Returns None if the panel has never been opened -- BN's
     sidebar widgets are created lazily on first click of the icon."""
-    return _widgets_by_bv.get(id(bv))
+    return _widgets_by_bv.get(_bv_key(bv))
 
 
 def _require_open_widget(bv):
@@ -100,6 +99,49 @@ def _add_callees_to_canvas(bv, addr):
     _run_on_main_thread(do)
 
 
+def _try_decode_string(data: bytes):
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text and all(32 <= ord(c) < 127 or c in "\t\n\r" for c in text):
+        return text
+    return None
+
+
+_MEMORY_PREVIEW_MAX = 48
+
+
+def _add_memory_location_to_canvas(bv, addr, length):
+    def do():
+        canvas_widget = _require_open_widget(bv)
+        if canvas_widget is None:
+            return
+
+        label = f"{addr:#x}"
+        if length > 1:
+            data = bv.read(addr, min(length, _MEMORY_PREVIEW_MAX))
+            truncated = "..." if length > _MEMORY_PREVIEW_MAX else ""
+            as_string = _try_decode_string(data)
+            end = addr + length
+            if as_string is not None:
+                label = f'{addr:#x}: "{as_string}{truncated}" [{addr:#x}-{end:#x}]'
+            else:
+                label = f"{addr:#x}: {data.hex()}{truncated} [{addr:#x}-{end:#x}]"
+
+        api.add_node(canvas_widget.canvas, label, address=addr)
+        logger.info("canvas %r: added memory location %r via PluginCommand", canvas_widget.canvas.name, label)
+
+    _run_on_main_thread(do)
+
+
+PluginCommand.register_for_range(
+    "Node Canvas\\Add Memory Location",
+    "Insert the selected address (or address range) into the active Node Canvas, including a "
+    "hex or decoded-string preview of its bytes when more than one byte is selected.",
+    _add_memory_location_to_canvas,
+)
+
 PluginCommand.register_for_address(
     "Node Canvas\\Add Function",
     "Insert the function at this address into the active Node Canvas (the canvas currently "
@@ -147,19 +189,32 @@ def _register_sidebar():
                 if self.bv is not None:
                     canvas = _load_or_create_active_canvas(self.bv)
                     self.panel.set_canvas(canvas)
-                    _widgets_by_bv[id(self.bv)] = self
+                    _widgets_by_bv[_bv_key(self.bv)] = self
                     logger.debug("sidebar panel opened for %r, canvas %r", self.bv.file.filename, canvas.name)
 
             def notifyViewChanged(self, view_frame):
                 bv = view_frame.getCurrentBinaryView() if view_frame else None
-                if bv is None or bv is self.bv:
+                if bv is None:
                     return
-                _widgets_by_bv.pop(id(self.bv), None)
+                # Compare by filename, not Python identity: BN can hand back
+                # a fresh Python proxy object wrapping the same underlying
+                # BinaryView on repeated calls, so `bv is self.bv` false-
+                # positives on "changed" for every notifyViewChanged tick --
+                # including ones fired by purely-internal sidebar clicks
+                # (e.g. switching canvas tabs) -- which was clobbering the
+                # user's tab switch by reloading the persisted active
+                # canvas right back over it.
+                if self.bv is not None and _bv_key(bv) == _bv_key(self.bv):
+                    self.bv = bv
+                    self.panel.bind_bv(bv)
+                    return
+                if self.bv is not None:
+                    _widgets_by_bv.pop(_bv_key(self.bv), None)
                 self.bv = bv
                 self.panel.bind_bv(bv)
                 canvas = _load_or_create_active_canvas(bv)
                 self.panel.set_canvas(canvas)
-                _widgets_by_bv[id(bv)] = self
+                _widgets_by_bv[_bv_key(bv)] = self
                 logger.debug("sidebar panel switched to %r, canvas %r", bv.file.filename, canvas.name)
 
         class CanvasSidebarWidgetType(ui.SidebarWidgetType):

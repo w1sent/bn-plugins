@@ -10,6 +10,7 @@ from .model import Canvas
 logger = get_logger("node_canvas")
 
 _METADATA_KEY = "node_canvas.canvases"
+_ACTIVE_KEY = "node_canvas.active_canvas_name"
 
 
 def _load_all(bv) -> dict:
@@ -43,3 +44,24 @@ def delete_canvas(bv, name: str):
         del all_canvases[name]
         bv.store_metadata(_METADATA_KEY, all_canvases)
         logger.debug("deleted canvas %r for %r", name, bv.file.filename)
+
+
+def generate_canvas_name(bv) -> str:
+    existing = set(list_canvas_names(bv))
+    i = 1
+    while f"canvas-{i}" in existing:
+        i += 1
+    return f"canvas-{i}"
+
+
+def get_active_canvas_name(bv) -> str | None:
+    return bv.get_metadata(_ACTIVE_KEY, None)
+
+
+def set_active_canvas_name(bv, name: str):
+    """Record which canvas a bv's sidebar panel currently has open -- see
+    __init__.py's notifyViewChanged, which reloads this on every (possibly
+    spurious) view-change notification, so it must always reflect
+    whatever the user is actually looking at, not just the last-created
+    canvas."""
+    bv.store_metadata(_ACTIVE_KEY, name)
