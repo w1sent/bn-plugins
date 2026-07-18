@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": ".NET NativeAOT",
+  "type": ["core"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "Recovers .NET NativeAOT runtime metadata (MethodTable/EEType type hierarchy, virtual methods, frozen strings/arrays) in compiled binaries with no IL and no CLR",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}
