@@ -59,6 +59,46 @@ plugin's source, a vendored copy of `core/`, and a populated `.deps/`
 directory. Self-contained and version-independent of other install trees.
 _Avoid_: deployment, install artifact.
 
+### node-canvas (`ux/node-canvas`)
+
+**Canvas**:
+A user-curated, freeform graph workspace persisted per-binary in BN's
+metadata store. Nodes are placed and grouped by hand, or dropped in via
+auto-populate; the canvas as a whole is never auto-laid-out.
+_Avoid_: Graph, diagram, workspace.
+
+**Node**:
+An entry on a Canvas, optionally bound to a BN address. An address-bound
+Node resolves its label live from BN's current analysis rather than
+storing a frozen string.
+_Avoid_: Vertex, item.
+
+**Unresolved Node**:
+An address-bound Node whose address no longer resolves to a valid BN
+entity (e.g. the function was deleted). Falls back to displaying the raw
+address with a distinguishing prefix symbol, and shows a toast instead of
+navigating on double-click.
+_Avoid_: Broken node, stale node, dead node.
+
+**Edge**:
+A directed connection between two Nodes on a Canvas, with independently
+settable color and thickness.
+_Avoid_: Link, connection, arrow.
+
+**Group**:
+A named, color-coded, collapsible cluster of Nodes and/or other Groups.
+Collapsing a Group cascades to collapse everything nested within it,
+reducing it to a single box with one aggregate Edge per external
+connection point; expanding restores each child's own last collapse
+state.
+_Avoid_: Cluster, bundle, container.
+
+**Legend**:
+A Canvas-level list of (color, label) pairs, registered explicitly and
+independently of which Nodes/Edges/Groups currently use that color — a
+color's meaning is intentional metadata, not inferred by scanning.
+_Avoid_: Key, color map.
+
 ## References
 
 ### Binary Ninja API
