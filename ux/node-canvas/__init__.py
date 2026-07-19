@@ -99,21 +99,13 @@ def _add_callees_to_canvas(bv, addr):
     _run_on_main_thread(do)
 
 
-def _try_decode_string(data: bytes):
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    if text and all(32 <= ord(c) < 127 or c in "\t\n\r" for c in text):
-        return text
-    return None
-
-
 _MEMORY_PREVIEW_MAX = 48
 
 
 def _add_memory_location_to_canvas(bv, addr, length):
     def do():
+        from .widget import try_decode_string  # Qt-dependent; deferred like _register_sidebar's imports
+
         canvas_widget = _require_open_widget(bv)
         if canvas_widget is None:
             return
@@ -122,7 +114,7 @@ def _add_memory_location_to_canvas(bv, addr, length):
         if length > 1:
             data = bv.read(addr, min(length, _MEMORY_PREVIEW_MAX))
             truncated = "..." if length > _MEMORY_PREVIEW_MAX else ""
-            as_string = _try_decode_string(data)
+            as_string = try_decode_string(data)
             end = addr + length
             if as_string is not None:
                 label = f'{addr:#x}: "{as_string}{truncated}" [{addr:#x}-{end:#x}]'

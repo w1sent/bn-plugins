@@ -26,23 +26,29 @@ def _drop_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _resolve_address_label(bv, address):
-    """Best-effort live label for an address: function name, else symbol
-    name, else data var type/name. Returns None if nothing resolves
-    (caller then falls back to Unresolved Node display, per CONTEXT.md)."""
+def _resolve_address(bv, address):
+    """Best-effort live (kind, label) for an address -- kind lets
+    widget.py pick a distinct icon per resolution (function/data/symbol,
+    see CONTEXT.md's node-canvas glossary); (None, None) if nothing
+    resolves (caller then falls back to Unresolved Node display).
+
+    Checked in this order: function, then data var, then generic symbol
+    -- a data variable often also has a symbol attached, and should be
+    classified as "data", not lumped in with plain "symbol" (imports/
+    exports with no function or data var backing them)."""
     func = bv.get_function_at(address)
     if func is not None:
-        return func.name
-
-    sym = bv.get_symbol_at(address)
-    if sym is not None:
-        return sym.name
+        return "function", func.name
 
     var = bv.get_data_var_at(address)
     if var is not None:
-        return f"data_{address:#x}"
+        return "data", f"data_{address:#x}"
 
-    return None
+    sym = bv.get_symbol_at(address)
+    if sym is not None:
+        return "symbol", sym.name
+
+    return None, None
 
 
 class Node:
@@ -62,15 +68,25 @@ class Node:
         so this stays a plain string usable for export formats too."""
         if self.address is None:
             return self.label
-        resolved = _resolve_address_label(bv, self.address)
-        if resolved is None:
+        _, label = _resolve_address(bv, self.address)
+        if label is None:
             return f"{self.address:#x}"
-        return resolved
+        return label
+
+    def resolve_kind(self, bv) -> Optional[str]:
+        """"function", "data", "symbol", or None (unresolved/no address)
+        -- see _resolve_address. Used by widget.py to pick a per-kind
+        icon (only a Function gets the "ƒ" marker)."""
+        if self.address is None:
+            return None
+        kind, _ = _resolve_address(bv, self.address)
+        return kind
 
     def is_unresolved(self, bv) -> bool:
         if self.address is None:
             return False
-        return _resolve_address_label(bv, self.address) is None
+        kind, _ = _resolve_address(bv, self.address)
+        return kind is None
 
     def to_dict(self):
         return _drop_none({
@@ -85,14 +101,20 @@ class Node:
         })
 
 
+DEFAULT_EDGE_THICKNESS = 3.0
+DEFAULT_EDGE_STYLE = "solid"
+EDGE_STYLES = ("solid", "dashed", "dotted", "dashdot")
+
+
 class Edge:
-    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=1.0, directed=True):
+    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, directed=True, style=DEFAULT_EDGE_STYLE):
         self.id = edge_id
         self.src = src
         self.dst = dst
         self.color = color
         self.thickness = thickness
         self.directed = directed
+        self.style = style
 
     def to_dict(self):
         return _drop_none({
@@ -102,6 +124,7 @@ class Edge:
             "color": self.color,
             "thickness": self.thickness,
             "directed": self.directed,
+            "style": self.style,
         })
 
 
@@ -143,7 +166,7 @@ class VisibleEdge:
 
     @property
     def thickness(self):
-        return self.edges[0].thickness if self.edges else 1.0
+        return self.edges[0].thickness if self.edges else DEFAULT_EDGE_THICKNESS
 
     @property
     def count(self):
@@ -152,6 +175,10 @@ class VisibleEdge:
     @property
     def directed(self):
         return self.edges[0].directed if self.edges else True
+
+    @property
+    def style(self):
+        return self.edges[0].style if self.edges else DEFAULT_EDGE_STYLE
 
 
 @dataclass
@@ -248,8 +275,8 @@ class Canvas:
 
     # -- edges ---------------------------------------------------------
 
-    def add_edge(self, src: Node, dst: Node, color=None, thickness=1.0, directed=True) -> Edge:
-        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, directed=directed)
+    def add_edge(self, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, directed=True, style=DEFAULT_EDGE_STYLE) -> Edge:
+        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, directed=directed, style=style)
         self.edges[edge.id] = edge
         self._notify("edge_added")
         return edge
@@ -268,6 +295,14 @@ class Canvas:
 
     def set_edge_directed(self, edge: Edge, directed: bool):
         edge.directed = directed
+        self._notify("edge_changed")
+
+    def set_edge_style(self, edge: Edge, style: str):
+        edge.style = style
+        self._notify("edge_changed")
+
+    def reverse_edge(self, edge: Edge):
+        edge.src, edge.dst = edge.dst, edge.src
         self._notify("edge_changed")
 
     # -- groups ------------------------------------------------------------
@@ -313,6 +348,14 @@ class Canvas:
                 continue
             node.group.member_nodes.remove(node)
             node.group = None
+        self._notify("group_changed")
+
+    def set_group_name(self, group: Group, name: str):
+        group.name = name
+        self._notify("group_changed")
+
+    def set_group_color(self, group: Group, color: Optional[str]):
+        group.color = color
         self._notify("group_changed")
 
     def collapse_group(self, group: Group):
@@ -479,8 +522,9 @@ class Canvas:
                 node_by_id[e["src"]],
                 node_by_id[e["dst"]],
                 color=e.get("color"),
-                thickness=e.get("thickness", 1.0),
+                thickness=e.get("thickness", DEFAULT_EDGE_THICKNESS),
                 directed=e.get("directed", True),
+                style=e.get("style", DEFAULT_EDGE_STYLE),
             )
             canvas.edges[edge.id] = edge
             max_id = max(max_id, edge.id)

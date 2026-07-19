@@ -17,8 +17,16 @@ from .model import Canvas, Node
 logger = get_logger("node_canvas")
 
 _DOT_SCALE = 100.0  # dot positions are in inches; scale up to pixel-ish units
-_RANK_SPACING = 160.0
-_COL_SPACING = 140.0
+
+# Canonical node box size and layout padding -- widget.py imports these
+# rather than keeping its own copy, so the renderer and the layout engine
+# never disagree about how much space a node needs.
+NODE_WIDTH = 140.0
+NODE_HEIGHT = 40.0
+_PADDING = 40.0  # minimum gap between adjacent node edges, in both engines
+
+_RANK_SPACING = NODE_HEIGHT + _PADDING * 2
+_COL_SPACING = NODE_WIDTH + _PADDING
 
 
 def _existing_bbox(canvas: Canvas, exclude: set[int]):
@@ -34,9 +42,20 @@ def _dot_available() -> bool:
 
 
 def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[float, float]]:
-    lines = ["digraph G {"]
+    # Without explicit width/height, dot assumes its own small default node
+    # size and packs nodes far closer than the _NODE_WIDTH x _NODE_HEIGHT
+    # boxes widget.py actually renders, so positions from an unmodified
+    # dot layout overlap once drawn. fixedsize=true makes dot honor these
+    # exactly instead of treating them as minimums; nodesep/ranksep add
+    # the same padding grid layout uses.
+    node_w_in = NODE_WIDTH / _DOT_SCALE
+    node_h_in = NODE_HEIGHT / _DOT_SCALE
+    nodesep_in = _PADDING / _DOT_SCALE
+    ranksep_in = (_PADDING * 2) / _DOT_SCALE
+
+    lines = ["digraph G {", f"  nodesep={nodesep_in};", f"  ranksep={ranksep_in};"]
     for node in new_nodes:
-        lines.append(f'  n{node.id} [label=""];')
+        lines.append(f'  n{node.id} [label="", shape=box, fixedsize=true, width={node_w_in}, height={node_h_in}];')
     for src, dst in internal_edges:
         lines.append(f"  n{src.id} -> n{dst.id};")
     lines.append("}")
@@ -57,10 +76,13 @@ def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[f
         parts = line.split()
         if not parts or parts[0] != "node":
             continue
-        # node <name> <x> <y> <width> <height> ...
+        # node <name> <x> <y> <width> <height> ... -- x/y are the node's
+        # CENTER in dot's plain output, but positions here are consumed as
+        # a top-left corner (see widget.py's NodeItem: setPos == top-left
+        # of its (0, 0, width, height) rect), so re-center on conversion.
         name, x, y = parts[1], float(parts[2]), float(parts[3])
         node_id = int(name[1:])
-        positions[node_id] = (x * _DOT_SCALE, y * _DOT_SCALE)
+        positions[node_id] = (x * _DOT_SCALE - NODE_WIDTH / 2, y * _DOT_SCALE - NODE_HEIGHT / 2)
     return positions
 
 

@@ -18,7 +18,7 @@ from typing import Optional
 from .core.logging import get_logger
 from . import formats, persistence
 from .layout import layout_new_nodes
-from .model import Canvas, Edge, Group, Node
+from .model import DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, Canvas, Edge, Group, Node
 
 logger = get_logger("node_canvas")
 
@@ -73,8 +73,8 @@ def set_node_label(canvas: Canvas, node: Node, label: str):
     canvas.set_node_label(node, label)
 
 
-def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = 1.0, directed: bool = True) -> Edge:
-    return canvas.add_edge(src, dst, color=color, thickness=thickness, directed=directed)
+def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = DEFAULT_EDGE_THICKNESS, directed: bool = True, style: str = DEFAULT_EDGE_STYLE) -> Edge:
+    return canvas.add_edge(src, dst, color=color, thickness=thickness, directed=directed, style=style)
 
 
 def remove_edge(canvas: Canvas, edge: Edge):
@@ -91,6 +91,14 @@ def set_edge_thickness(canvas: Canvas, edge: Edge, thickness: float):
 
 def set_edge_directed(canvas: Canvas, edge: Edge, directed: bool):
     canvas.set_edge_directed(edge, directed)
+
+
+def set_edge_style(canvas: Canvas, edge: Edge, style: str):
+    canvas.set_edge_style(edge, style)
+
+
+def reverse_edge(canvas: Canvas, edge: Edge):
+    canvas.reverse_edge(edge)
 
 
 # -- auto-populate: call-tree / xref -----------------------------------
@@ -255,7 +263,7 @@ def _merge_into(dest: Canvas, src: Canvas) -> list[Node]:
     for edge in src.edges.values():
         dest.add_edge(
             node_map[edge.src.id], node_map[edge.dst.id],
-            color=edge.color, thickness=edge.thickness, directed=edge.directed,
+            color=edge.color, thickness=edge.thickness, directed=edge.directed, style=edge.style,
         )
 
     return new_nodes

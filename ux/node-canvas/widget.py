@@ -21,6 +21,8 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -47,22 +49,24 @@ from PySide6.QtWidgets import (
 
 from .core.logging import get_logger
 from . import formats, persistence
-from .layout import layout_new_nodes
-from .model import Canvas, Group, Node
+from .layout import NODE_HEIGHT as _NODE_HEIGHT, NODE_WIDTH as _NODE_WIDTH, layout_new_nodes
+from .model import DEFAULT_EDGE_STYLE, EDGE_STYLES, Canvas, Group, Node
 
 logger = get_logger("node_canvas")
 
-_NODE_WIDTH = 140
-_NODE_HEIGHT = 40
 _DEFAULT_NODE_COLOR = "#3d5a80"
 _DEFAULT_GROUP_COLOR = "#98c1d9"
-_ADDRESS_ICON = "ƒ"  # ƒ -- marks a resolved, address-bound node
+_NODE_ICONS = {
+    "function": "ƒ",  # ƒ -- resolved to a BN Function
+    "data": "◆",  # ◆ -- resolved to a BN data variable
+    "symbol": "●",  # ● -- resolved to some other symbol (import, export, ...)
+}
 _UNRESOLVED_ICON = "⚠"  # ⚠ -- marks an address that no longer resolves
 _ARROW_SIZE = 9
-_NODE_CLIP_MARGIN = 24
-_BOX_CLIP_MARGIN = 12
 _GROUP_PADDING = 20
 _GROUP_LABEL_HEIGHT = 16
+_EDGE_STYLE_LABELS = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-Dot"}
+_EDGE_QT_PEN_STYLES = {"solid": Qt.SolidLine, "dashed": Qt.DashLine, "dotted": Qt.DotLine, "dashdot": Qt.DashDotLine}
 
 # canvas identity -> open CanvasWidget, so api.export_image() can find a
 # live scene to rasterize (image export inherently needs a rendered view).
@@ -84,6 +88,22 @@ def _text_color_for_background(bg: QColor) -> str:
     return "#000000" if luminance > 140 else "#ffffff"
 
 
+_MEMORY_PREVIEW_MAX = 48
+
+
+def try_decode_string(data: bytes):
+    """None if `data` doesn't look like a printable string -- shared by
+    __init__.py's "Add Memory Location" PluginCommand (BN view context
+    menu) and this module's own sidebar action, so both formats agree."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text and all(32 <= ord(c) < 127 or c in "\t\n\r" for c in text):
+        return text
+    return None
+
+
 # -- form dialog (replaces chains of QInputDialogs) ----------------------
 
 
@@ -96,17 +116,25 @@ def _field(key, label, kind="text", default="", choices=None, range=None, decima
 
 class FormDialog(QDialog):
     """A single-form dialog for multi-field add/edit actions -- one OK/
-    Cancel round trip instead of a chain of QInputDialogs."""
+    Cancel round trip instead of a chain of QInputDialogs.
 
-    def __init__(self, parent, title: str, fields: list[dict]):
+    `on_change`, if given, is called as `on_change(dialog)` whenever any
+    non-preview field's value changes (including once up front, to seed
+    the initial preview) -- it should call `dialog.set_preview(key, text)`
+    for whichever "preview" fields it wants to update. Used by e.g. Add
+    Memory Location's live hex/string preview."""
+
+    def __init__(self, parent, title: str, fields: list[dict], on_change=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self._widgets = {}
+        self._on_change = on_change
 
         form = QFormLayout()
         for spec in fields:
             kind = spec["kind"]
             default = spec["default"]
+            row_widget = None
             if kind == "choice":
                 w = QComboBox()
                 w.addItems(spec["choices"] or [])
@@ -123,10 +151,21 @@ class FormDialog(QDialog):
                 w.setRange(lo, hi)
                 w.setDecimals(spec["decimals"])
                 w.setValue(float(default) if default != "" else lo)
+            elif kind == "checkbox":
+                w = QCheckBox()
+                w.setChecked(bool(default))
+            elif kind == "color":
+                w = QLineEdit(str(default or ""))
+                row_widget = self._make_color_row(w)
+            elif kind == "preview":
+                w = QLineEdit(str(default or ""))
+                w.setReadOnly(True)
             else:  # "text"
                 w = QLineEdit(str(default or ""))
             self._widgets[spec["key"]] = w
-            form.addRow(spec["label"], w)
+            form.addRow(spec["label"], row_widget if row_widget is not None else w)
+            if kind != "preview" and on_change is not None:
+                self._watch(w)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -136,6 +175,46 @@ class FormDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
+        if on_change is not None:
+            on_change(self)  # seed the initial preview
+
+    def _make_color_row(self, line: QLineEdit) -> QWidget:
+        button = QToolButton()
+        button.setText("🎨")
+        button.setToolTip("Pick color...")
+
+        def pick():
+            initial = QColor(line.text())
+            if not initial.isValid():
+                initial = QColor(_DEFAULT_NODE_COLOR)
+            color = QColorDialog.getColor(initial, self, "Pick Color")
+            if color.isValid():
+                line.setText(color.name())
+
+        button.clicked.connect(pick)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(line, 1)
+        row_layout.addWidget(button)
+        return row
+
+    def _watch(self, w):
+        if isinstance(w, QComboBox):
+            w.currentTextChanged.connect(lambda _: self._on_change(self))
+        elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+            w.valueChanged.connect(lambda _: self._on_change(self))
+        elif isinstance(w, QCheckBox):
+            w.toggled.connect(lambda _: self._on_change(self))
+        elif isinstance(w, QLineEdit):
+            w.textChanged.connect(lambda _: self._on_change(self))
+
+    def set_preview(self, key: str, text: str):
+        w = self._widgets.get(key)
+        if isinstance(w, QLineEdit):
+            w.setText(text)
+
     def values(self) -> dict:
         result = {}
         for key, w in self._widgets.items():
@@ -143,13 +222,15 @@ class FormDialog(QDialog):
                 result[key] = w.currentText()
             elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
                 result[key] = w.value()
+            elif isinstance(w, QCheckBox):
+                result[key] = w.isChecked()
             else:
                 result[key] = w.text()
         return result
 
     @staticmethod
-    def get(parent, title: str, fields: list[dict]):
-        dlg = FormDialog(parent, title, fields)
+    def get(parent, title: str, fields: list[dict], on_change=None):
+        dlg = FormDialog(parent, title, fields, on_change=on_change)
         if dlg.exec() == QDialog.Accepted:
             return dlg.values()
         return None
@@ -176,13 +257,16 @@ class NodeItem(QGraphicsRectItem):
         unresolved = False
         if self.node.address is None:
             label = self.node.label
+        elif bv is None:
+            label = self.node.label
         else:
-            unresolved = self.node.is_unresolved(bv) if bv is not None else False
-            if unresolved:
+            kind = self.node.resolve_kind(bv)
+            if kind is None:
+                unresolved = True
                 label = f"{_UNRESOLVED_ICON} {self.node.address:#x}"
             else:
-                resolved = self.node.display_label(bv) if bv is not None else self.node.label
-                label = f"{_ADDRESS_ICON} {resolved}"
+                icon = _NODE_ICONS.get(kind, "")
+                label = f"{icon} {self.node.display_label(bv)}"
 
         fill_color = self.node.color or _DEFAULT_NODE_COLOR
         border_color = self.node.border_color or ("#e63946" if unresolved else "#1d3557")
@@ -287,7 +371,7 @@ class GroupBoxItem(QGraphicsRectItem):
 
 
 class EdgeItem(QGraphicsPathItem):
-    def __init__(self, src_item, dst_item, color=None, thickness=1.0, count=1, directed=True, edges=None):
+    def __init__(self, src_item, dst_item, color=None, thickness=None, count=1, directed=True, style=DEFAULT_EDGE_STYLE, edges=None):
         super().__init__()
         self.src_item = src_item
         self.dst_item = dst_item
@@ -295,9 +379,13 @@ class EdgeItem(QGraphicsPathItem):
         self.edges = edges or []  # underlying model Edge(s) this item represents
         self.setZValue(0)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
-        pen = QPen(QColor(color or "#6c757d"), max(1.0, float(thickness)))
-        if count > 1:
+        pen = QPen(QColor(color or "#6c757d"), max(1.0, float(thickness if thickness is not None else 3.0)))
+        if count > 1 and style == DEFAULT_EDGE_STYLE:
+            # No explicit style chosen -- dash-dot doubles as the "this
+            # represents more than one collapsed-group edge" visual cue.
             pen.setStyle(Qt.DashDotLine)
+        else:
+            pen.setStyle(_EDGE_QT_PEN_STYLES.get(style, Qt.SolidLine))
         self.setPen(pen)
         self.update_path()
 
@@ -305,22 +393,31 @@ class EdgeItem(QGraphicsPathItem):
         rect = item.rect() if hasattr(item, "rect") else QRectF(0, 0, 0, 0)
         return item.scenePos() + rect.center()
 
-    def _margin_for(self, item):
-        return _BOX_CLIP_MARGIN if isinstance(item, GroupBoxItem) else _NODE_CLIP_MARGIN
+    def _clip_to_rect(self, other: QPointF, rect: QRectF) -> QPointF:
+        """The exact point where the segment from `other` to `rect`'s
+        center crosses `rect`'s boundary -- edges always terminate right
+        at a node's or group box's edge, never its center, regardless of
+        how big the box is (a collapsed group's box can be far larger
+        than a plain node)."""
+        center = rect.center()
+        dx, dy = center.x() - other.x(), center.y() - other.y()
+        if dx == 0 and dy == 0:
+            return center
+        half_w, half_h = rect.width() / 2, rect.height() / 2
+        tx = half_w / abs(dx) if dx != 0 else float("inf")
+        ty = half_h / abs(dy) if dy != 0 else float("inf")
+        t = min(tx, ty, 1.0)
+        return QPointF(center.x() - dx * t, center.y() - dy * t)
 
-    def _clip(self, far: QPointF, near: QPointF, margin: float) -> QPointF:
-        """A point `margin` back from `near` along the far->near line, so
-        edges stop at a node/box's approximate boundary instead of its
-        center (and so an arrowhead doesn't render on top of the node)."""
-        dx, dy = near.x() - far.x(), near.y() - far.y()
-        dist = math.hypot(dx, dy) or 1.0
-        return QPointF(near.x() - dx / dist * margin, near.y() - dy / dist * margin)
+    def _endpoint(self, item, other_center: QPointF) -> QPointF:
+        rect = item.sceneBoundingRect() if hasattr(item, "sceneBoundingRect") else QRectF(other_center, other_center)
+        return self._clip_to_rect(other_center, rect)
 
     def update_path(self):
-        p1 = self._center(self.src_item)
-        p2 = self._center(self.dst_item)
-        p1c = self._clip(p2, p1, self._margin_for(self.src_item))
-        p2c = self._clip(p1, p2, self._margin_for(self.dst_item))
+        c1 = self._center(self.src_item)
+        c2 = self._center(self.dst_item)
+        p1c = self._endpoint(self.src_item, c2)
+        p2c = self._endpoint(self.dst_item, c1)
 
         path = QPainterPath(p1c)
         path.lineTo(p2c)
@@ -486,7 +583,7 @@ class CanvasWidget(QGraphicsView):
             edge_item = EdgeItem(
                 src_item, dst_item,
                 color=vedge.color, thickness=vedge.thickness, count=vedge.count, directed=vedge.directed,
-                edges=vedge.edges,
+                style=vedge.style, edges=vedge.edges,
             )
             self._scene.addItem(edge_item)
             self._edge_items[id(vedge)] = edge_item
@@ -697,6 +794,7 @@ class CanvasWidget(QGraphicsView):
         if group_box is not None:
             action_label = "Expand Group" if group_box.group.collapsed else "Collapse Group"
             menu.addAction(action_label, lambda: self._toggle_group(group_box.group))
+            menu.addAction("Edit Group...", lambda: self._action_edit_group(group_box.group))
             menu.addAction("Remove Group (keep nodes)", lambda: self._action_remove_group(group_box.group))
 
         edge_item = _climb_to(item, EdgeItem)
@@ -745,29 +843,67 @@ class CanvasWidget(QGraphicsView):
             pos = self.mapToScene(self.viewport().rect().center())
             self.canvas.add_node(values["label"], x=pos.x(), y=pos.y())
 
+    def _parse_addr(self, text: str) -> Optional[int]:
+        try:
+            return int(text, 16) if text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            return None
+
+    def _memory_preview_text(self, addr: Optional[int], length: int, representation: str) -> str:
+        if addr is None:
+            return "(invalid address)"
+        if representation == "Address only" or self.bv is None or length <= 0:
+            return ""
+        try:
+            data = self.bv.read(addr, min(length, _MEMORY_PREVIEW_MAX))
+        except Exception:
+            return "(read failed)"
+        truncated = "..." if length > _MEMORY_PREVIEW_MAX else ""
+        if representation == "String":
+            text = try_decode_string(data)
+            return f"{text}{truncated}" if text is not None else "(not printable)"
+        return f"{data.hex()}{truncated}"
+
     def _action_add_memory_location(self):
-        default_addr = ""
+        default_addr, default_len = "", 1
         try:
             import binaryninjaui as ui
 
             ctx = ui.UIContext.activeContext()
             vf = ctx.getCurrentViewFrame() if ctx else None
             if vf is not None:
-                start, _ = vf.getSelectionOffsets()
+                start, end = vf.getSelectionOffsets()
                 default_addr = f"{start:#x}"
+                default_len = max(1, end - start)
         except Exception:
             pass
 
-        values = FormDialog.get(self, "Add Memory Location", [_field("address", "Address (hex)", default=default_addr)])
+        def update_preview(dlg: FormDialog):
+            v = dlg.values()
+            addr = self._parse_addr(v["address"])
+            dlg.set_preview("preview", self._memory_preview_text(addr, int(v["length"]), v["representation"]))
+
+        values = FormDialog.get(self, "Add Memory Location", [
+            _field("address", "Address (hex)", default=default_addr),
+            _field("length", "Length (bytes)", "int", default_len, range=(1, 65536)),
+            _field("representation", "Representation", "choice", "Hex", choices=["Hex", "String", "Address only"]),
+            _field("preview", "Preview", "preview"),
+        ], on_change=update_preview)
         if not values or not values["address"]:
             return
-        try:
-            text = values["address"]
-            addr = int(text, 16) if text.lower().startswith("0x") else int(text, 0)
-        except ValueError:
+
+        addr = self._parse_addr(values["address"])
+        if addr is None:
             QMessageBox.warning(self, "Add Memory Location", f"Not a valid address: {values['address']!r}")
             return
-        self.canvas.add_node(f"{addr:#x}", address=addr)
+
+        length = int(values["length"])
+        representation = values["representation"]
+        label = f"{addr:#x}"
+        if representation != "Address only" and length > 0:
+            body = self._memory_preview_text(addr, length, representation)
+            label = f"{addr:#x}: {body} [{addr:#x}-{addr + length:#x}]"
+        self.canvas.add_node(label, address=addr)
 
     def _action_remove(self, nodes):
         for node in nodes:
@@ -776,7 +912,7 @@ class CanvasWidget(QGraphicsView):
     def _action_group(self, nodes):
         values = FormDialog.get(self, "Group Selected", [
             _field("name", "Group name"),
-            _field("color", "Color (#rrggbb)", default=_DEFAULT_GROUP_COLOR),
+            _field("color", "Color", "color", default=_DEFAULT_GROUP_COLOR),
         ])
         if values and values["name"]:
             self.canvas.group_nodes(nodes, values["name"], color=values["color"] or None)
@@ -796,6 +932,16 @@ class CanvasWidget(QGraphicsView):
     def _action_remove_group(self, group):
         self.canvas.remove_group(group, keep_members=True)
 
+    def _action_edit_group(self, group: Group):
+        values = FormDialog.get(self, "Edit Group", [
+            _field("name", "Name", default=group.name),
+            _field("color", "Color", "color", default=group.color or _DEFAULT_GROUP_COLOR),
+        ])
+        if not values or not values["name"]:
+            return
+        self.canvas.set_group_name(group, values["name"])
+        self.canvas.set_group_color(group, values["color"] or None)
+
     def _action_connect_selected(self, nodes):
         if len(nodes) != 2:
             return
@@ -805,8 +951,8 @@ class CanvasWidget(QGraphicsView):
     def _action_edit_node(self, node: Node):
         values = FormDialog.get(self, "Edit Node", [
             _field("label", "Label", default=node.label),
-            _field("color", "Fill color (#rrggbb, blank = default)", default=node.color or ""),
-            _field("border_color", "Border color (#rrggbb, blank = default)", default=node.border_color or ""),
+            _field("color", "Fill color (blank = default)", "color", default=node.color or ""),
+            _field("border_color", "Border color (blank = default)", "color", default=node.border_color or ""),
         ])
         if not values:
             return
@@ -823,16 +969,23 @@ class CanvasWidget(QGraphicsView):
             # touches the first underlying Edge -- expand the group(s) to
             # edit the others individually.
             logger.debug("editing 1 of %d aggregated edges", len(edge_item.edges))
+        style_choices = [_EDGE_STYLE_LABELS[s] for s in EDGE_STYLES]
         values = FormDialog.get(self, "Edit Edge", [
-            _field("color", "Color (#rrggbb, blank = default)", default=edge.color or ""),
+            _field("color", "Color (blank = default)", "color", default=edge.color or ""),
             _field("thickness", "Thickness", "float", edge.thickness, range=(0.5, 20.0)),
+            _field("style", "Style", "choice", _EDGE_STYLE_LABELS[edge.style], choices=style_choices),
             _field("direction", "Direction", "choice", "Directed" if edge.directed else "Undirected", choices=["Directed", "Undirected"]),
+            _field("reverse", "Swap direction (src <-> dst)", "checkbox", False),
         ])
         if not values:
             return
         self.canvas.set_edge_color(edge, values["color"] or None)
         self.canvas.set_edge_thickness(edge, values["thickness"])
+        style_by_label = {v: k for k, v in _EDGE_STYLE_LABELS.items()}
+        self.canvas.set_edge_style(edge, style_by_label.get(values["style"], DEFAULT_EDGE_STYLE))
         self.canvas.set_edge_directed(edge, values["direction"] == "Directed")
+        if values["reverse"]:
+            self.canvas.reverse_edge(edge)
 
     def _action_add_callers(self, node: Node):
         from . import api
@@ -854,9 +1007,16 @@ class CanvasWidget(QGraphicsView):
             self.relayout(mode=values["mode"].lower())
 
     def _action_export_image(self, scope):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Image", "", "PNG (*.png);;PDF (*.pdf)")
-        if path:
-            self.export_image(path, scope=scope)
+        path, selected_filter = QFileDialog.getSaveFileName(self, "Export Image", "", "PNG (*.png);;PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith((".png", ".pdf")):
+            # Some native/GTK save dialogs don't append an extension even
+            # with a filter selected -- QImage.save() infers format from
+            # the extension and just silently no-ops (returns False, no
+            # exception) if it can't, so the file never gets written.
+            path += ".pdf" if "pdf" in selected_filter.lower() else ".png"
+        self.export_image(path, scope=scope)
 
     def _action_export_mermaid(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Mermaid", "", "Markdown (*.md)")
@@ -890,7 +1050,7 @@ class CanvasWidget(QGraphicsView):
     def _action_add_legend_entry(self):
         values = FormDialog.get(self, "Add Legend Entry", [
             _field("label", "Label"),
-            _field("color", "Color (#rrggbb)", default=_DEFAULT_NODE_COLOR),
+            _field("color", "Color", "color", default=_DEFAULT_NODE_COLOR),
         ])
         if values and values["label"] and values["color"]:
             self.canvas.add_legend_entry(values["color"], values["label"])
@@ -899,7 +1059,7 @@ class CanvasWidget(QGraphicsView):
         color, label = self.canvas.legend[index]
         values = FormDialog.get(self, "Edit Legend Entry", [
             _field("label", "Label", default=label),
-            _field("color", "Color (#rrggbb)", default=color),
+            _field("color", "Color", "color", default=color),
         ])
         if values and values["label"] and values["color"]:
             self.canvas.update_legend_entry(index, color=values["color"], label=values["label"])
@@ -922,8 +1082,18 @@ class CanvasWidget(QGraphicsView):
             rect = QRectF(0, 0, 1, 1)
 
         if path.lower().endswith(".pdf"):
-            from PySide6.QtGui import QPageSize
-            from PySide6.QtPrintSupport import QPrinter
+            try:
+                from PySide6.QtGui import QPageSize
+                from PySide6.QtPrintSupport import QPrinter
+            except ImportError as exc:
+                # QtPrintSupport isn't always usable -- e.g. a system
+                # PySide6 install with a Qt runtime version mismatched
+                # against BN's bundled Qt -- and without this it fails
+                # with an unhandled exception, so from the user's
+                # perspective the export just silently never happens.
+                logger.error("PDF export unavailable (QtPrintSupport failed to import: %s)", exc)
+                self._show_toast("PDF export unavailable in this environment -- try PNG instead")
+                return
 
             printer = QPrinter(QPrinter.HighResolution)
             printer.setOutputFormat(QPrinter.PdfFormat)
@@ -938,7 +1108,9 @@ class CanvasWidget(QGraphicsView):
             painter = QPainter(image)
             self._scene.render(painter, source=rect)
             painter.end()
-            image.save(path)
+            if not image.save(path, "PNG"):
+                logger.error("failed to write image export to %r", path)
+                self._show_toast(f"Image export failed: could not write {path}")
 
 
 class _ClosableTabBar(QTabBar):
