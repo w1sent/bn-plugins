@@ -74,7 +74,14 @@ def export_mermaid(canvas: Canvas, path: str):
             lines.append(f'    {_mermaid_id("n", node.id)}["{_mermaid_escape(node.label)}"]')
 
     for edge in canvas.edges.values():
-        arrow = "-->" if edge.directed else "---"
+        if edge.arrow_start and edge.arrow_end:
+            arrow = "<-->"
+        elif edge.arrow_start:
+            arrow = "<--"
+        elif edge.arrow_end:
+            arrow = "-->"
+        else:
+            arrow = "---"
         lines.append(f'    {_mermaid_id("n", edge.src.id)} {arrow} {_mermaid_id("n", edge.dst.id)}')
 
     with open(path, "w", encoding="utf-8") as f:
@@ -128,8 +135,13 @@ def export_dot(canvas: Canvas, path: str):
         attrs.append(f"penwidth={edge.thickness}")
         if edge.style != DEFAULT_EDGE_STYLE:
             attrs.append(f'style="{edge.style}"')
-        if not edge.directed:
+        if edge.arrow_start and edge.arrow_end:
+            attrs.append('dir="both"')
+        elif edge.arrow_start and not edge.arrow_end:
+            attrs.append('dir="back"')
+        elif not edge.arrow_start and not edge.arrow_end:
             attrs.append('dir="none"')
+        # arrow_end-only is DOT's implicit default ("forward") -- omitted.
         lines.append(f"    n{edge.src.id} -> n{edge.dst.id} [{', '.join(attrs)}];")
 
     lines.append("}")
@@ -271,11 +283,19 @@ def import_dot(path: str, name: str | None = None) -> Canvas:
             src = node_by_dot_name[src_name]
             dst = node_by_dot_name[dst_name]
             thickness = float(attrs.get("penwidth", DEFAULT_EDGE_THICKNESS))
-            directed = attrs.get("dir", "").lower() != "none"
+            dir_attr = attrs.get("dir", "forward").lower()
+            if dir_attr == "both":
+                arrow_start, arrow_end = True, True
+            elif dir_attr == "back":
+                arrow_start, arrow_end = True, False
+            elif dir_attr == "none":
+                arrow_start, arrow_end = False, False
+            else:
+                arrow_start, arrow_end = False, True
             style = attrs.get("style", DEFAULT_EDGE_STYLE)
             if style not in EDGE_STYLES:
                 style = DEFAULT_EDGE_STYLE
-            canvas.add_edge(src, dst, color=attrs.get("color"), thickness=thickness, directed=directed, style=style)
+            canvas.add_edge(src, dst, color=attrs.get("color"), thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
             continue
 
         attr_list_match = _ATTR_LIST_RE.search(token)

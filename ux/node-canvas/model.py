@@ -107,14 +107,22 @@ EDGE_STYLES = ("solid", "dashed", "dotted", "dashdot")
 
 
 class Edge:
-    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, directed=True, style=DEFAULT_EDGE_STYLE):
+    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE):
         self.id = edge_id
         self.src = src
         self.dst = dst
         self.color = color
         self.thickness = thickness
-        self.directed = directed
+        self.arrow_start = arrow_start
+        self.arrow_end = arrow_end
         self.style = style
+
+    @property
+    def directed(self) -> bool:
+        """Whether this edge has an arrow at either end -- used by export
+        formats (DOT/Mermaid) that only distinguish "has direction" from
+        "plain line", not which end(s)."""
+        return self.arrow_start or self.arrow_end
 
     def to_dict(self):
         return _drop_none({
@@ -123,7 +131,8 @@ class Edge:
             "dst": self.dst.id,
             "color": self.color,
             "thickness": self.thickness,
-            "directed": self.directed,
+            "arrow_start": self.arrow_start,
+            "arrow_end": self.arrow_end,
             "style": self.style,
         })
 
@@ -173,8 +182,12 @@ class VisibleEdge:
         return len(self.edges)
 
     @property
-    def directed(self):
-        return self.edges[0].directed if self.edges else True
+    def arrow_start(self):
+        return self.edges[0].arrow_start if self.edges else False
+
+    @property
+    def arrow_end(self):
+        return self.edges[0].arrow_end if self.edges else True
 
     @property
     def style(self):
@@ -275,8 +288,8 @@ class Canvas:
 
     # -- edges ---------------------------------------------------------
 
-    def add_edge(self, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, directed=True, style=DEFAULT_EDGE_STYLE) -> Edge:
-        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, directed=directed, style=style)
+    def add_edge(self, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE) -> Edge:
+        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
         self.edges[edge.id] = edge
         self._notify("edge_added")
         return edge
@@ -293,8 +306,11 @@ class Canvas:
         edge.thickness = thickness
         self._notify("edge_changed")
 
-    def set_edge_directed(self, edge: Edge, directed: bool):
-        edge.directed = directed
+    def set_edge_arrows(self, edge: Edge, arrow_start: Optional[bool] = None, arrow_end: Optional[bool] = None):
+        if arrow_start is not None:
+            edge.arrow_start = arrow_start
+        if arrow_end is not None:
+            edge.arrow_end = arrow_end
         self._notify("edge_changed")
 
     def set_edge_style(self, edge: Edge, style: str):
@@ -303,6 +319,7 @@ class Canvas:
 
     def reverse_edge(self, edge: Edge):
         edge.src, edge.dst = edge.dst, edge.src
+        edge.arrow_start, edge.arrow_end = edge.arrow_end, edge.arrow_start
         self._notify("edge_changed")
 
     # -- groups ------------------------------------------------------------
@@ -523,7 +540,10 @@ class Canvas:
                 node_by_id[e["dst"]],
                 color=e.get("color"),
                 thickness=e.get("thickness", DEFAULT_EDGE_THICKNESS),
-                directed=e.get("directed", True),
+                # arrow_end falls back to the old single "directed" field
+                # for canvases saved before per-end arrows existed.
+                arrow_start=e.get("arrow_start", False),
+                arrow_end=e.get("arrow_end", e.get("directed", True)),
                 style=e.get("style", DEFAULT_EDGE_STYLE),
             )
             canvas.edges[edge.id] = edge

@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -371,22 +372,28 @@ class GroupBoxItem(QGraphicsRectItem):
 
 
 class EdgeItem(QGraphicsPathItem):
-    def __init__(self, src_item, dst_item, color=None, thickness=None, count=1, directed=True, style=DEFAULT_EDGE_STYLE, edges=None):
+    def __init__(self, src_item, dst_item, color=None, thickness=None, count=1, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE, edges=None):
         super().__init__()
         self.src_item = src_item
         self.dst_item = dst_item
-        self.directed = directed
+        self.arrow_start = arrow_start
+        self.arrow_end = arrow_end
+        self.count = count
         self.edges = edges or []  # underlying model Edge(s) this item represents
         self.setZValue(0)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         pen = QPen(QColor(color or "#6c757d"), max(1.0, float(thickness if thickness is not None else 3.0)))
-        if count > 1 and style == DEFAULT_EDGE_STYLE:
-            # No explicit style chosen -- dash-dot doubles as the "this
-            # represents more than one collapsed-group edge" visual cue.
-            pen.setStyle(Qt.DashDotLine)
-        else:
-            pen.setStyle(_EDGE_QT_PEN_STYLES.get(style, Qt.SolidLine))
+        # The line style always matches the model's edge.style exactly --
+        # it must never be silently overridden (e.g. to cue "aggregated
+        # edge"), or the Edit Edge form would show a style that doesn't
+        # match what's actually drawn. Aggregation is instead shown via a
+        # "xN" count label, added below.
+        pen.setStyle(_EDGE_QT_PEN_STYLES.get(style, Qt.SolidLine))
         self.setPen(pen)
+        self._count_label = None
+        if count > 1:
+            self._count_label = QGraphicsSimpleTextItem(f"×{count}", self)
+            self._count_label.setBrush(QBrush(QColor(color or "#6c757d")))
         self.update_path()
 
     def _center(self, item):
@@ -421,13 +428,23 @@ class EdgeItem(QGraphicsPathItem):
 
         path = QPainterPath(p1c)
         path.lineTo(p2c)
-        if self.directed:
-            angle = math.atan2(p2c.y() - p1c.y(), p2c.x() - p1c.x())
+        angle = math.atan2(p2c.y() - p1c.y(), p2c.x() - p1c.x())
+        if self.arrow_end:
             for sign in (-1, 1):
                 wing_angle = angle + sign * math.radians(28)
                 path.moveTo(p2c)
                 path.lineTo(p2c - QPointF(math.cos(wing_angle), math.sin(wing_angle)) * _ARROW_SIZE)
+        if self.arrow_start:
+            back_angle = angle + math.pi
+            for sign in (-1, 1):
+                wing_angle = back_angle + sign * math.radians(28)
+                path.moveTo(p1c)
+                path.lineTo(p1c - QPointF(math.cos(wing_angle), math.sin(wing_angle)) * _ARROW_SIZE)
         self.setPath(path)
+        if self._count_label is not None:
+            mid = QPointF((p1c.x() + p2c.x()) / 2, (p1c.y() + p2c.y()) / 2)
+            box = self._count_label.boundingRect()
+            self._count_label.setPos(mid.x() - box.width() / 2, mid.y() - box.height() / 2)
 
 
 class LegendContainerItem(QGraphicsRectItem):
@@ -582,7 +599,8 @@ class CanvasWidget(QGraphicsView):
                 continue
             edge_item = EdgeItem(
                 src_item, dst_item,
-                color=vedge.color, thickness=vedge.thickness, count=vedge.count, directed=vedge.directed,
+                color=vedge.color, thickness=vedge.thickness, count=vedge.count,
+                arrow_start=vedge.arrow_start, arrow_end=vedge.arrow_end,
                 style=vedge.style, edges=vedge.edges,
             )
             self._scene.addItem(edge_item)
@@ -784,6 +802,7 @@ class CanvasWidget(QGraphicsView):
                 menu.addAction("Remove Selected from Group", lambda: self._action_remove_from_group(selected_nodes))
             if len(selected_nodes) == 2:
                 menu.addAction("Connect Selected", lambda: self._action_connect_selected(selected_nodes))
+            menu.addAction("Copy Content", lambda: self._action_copy_content(selected_nodes))
             if len(selected_nodes) == 1:
                 menu.addAction("Edit Node...", lambda: self._action_edit_node(selected_nodes[0]))
                 if selected_nodes[0].address is not None:
@@ -948,6 +967,11 @@ class CanvasWidget(QGraphicsView):
         self.canvas.add_edge(nodes[0], nodes[1])
         logger.info("canvas %r: connected node %d -> node %d", self.canvas.name, nodes[0].id, nodes[1].id)
 
+    def _action_copy_content(self, nodes):
+        text = "\n".join(node.display_label(self.bv) if self.bv is not None else node.label for node in nodes)
+        QApplication.clipboard().setText(text)
+        logger.info("canvas %r: copied content of %d node(s) to clipboard", self.canvas.name, len(nodes))
+
     def _action_edit_node(self, node: Node):
         values = FormDialog.get(self, "Edit Node", [
             _field("label", "Label", default=node.label),
@@ -974,7 +998,8 @@ class CanvasWidget(QGraphicsView):
             _field("color", "Color (blank = default)", "color", default=edge.color or ""),
             _field("thickness", "Thickness", "float", edge.thickness, range=(0.5, 20.0)),
             _field("style", "Style", "choice", _EDGE_STYLE_LABELS[edge.style], choices=style_choices),
-            _field("direction", "Direction", "choice", "Directed" if edge.directed else "Undirected", choices=["Directed", "Undirected"]),
+            _field("arrow_start", "Arrow at start (src)", "checkbox", edge.arrow_start),
+            _field("arrow_end", "Arrow at end (dst)", "checkbox", edge.arrow_end),
             _field("reverse", "Swap direction (src <-> dst)", "checkbox", False),
         ])
         if not values:
@@ -983,7 +1008,7 @@ class CanvasWidget(QGraphicsView):
         self.canvas.set_edge_thickness(edge, values["thickness"])
         style_by_label = {v: k for k, v in _EDGE_STYLE_LABELS.items()}
         self.canvas.set_edge_style(edge, style_by_label.get(values["style"], DEFAULT_EDGE_STYLE))
-        self.canvas.set_edge_directed(edge, values["direction"] == "Directed")
+        self.canvas.set_edge_arrows(edge, arrow_start=values["arrow_start"], arrow_end=values["arrow_end"])
         if values["reverse"]:
             self.canvas.reverse_edge(edge)
 

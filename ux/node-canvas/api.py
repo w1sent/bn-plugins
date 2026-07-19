@@ -73,8 +73,8 @@ def set_node_label(canvas: Canvas, node: Node, label: str):
     canvas.set_node_label(node, label)
 
 
-def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = DEFAULT_EDGE_THICKNESS, directed: bool = True, style: str = DEFAULT_EDGE_STYLE) -> Edge:
-    return canvas.add_edge(src, dst, color=color, thickness=thickness, directed=directed, style=style)
+def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = DEFAULT_EDGE_THICKNESS, arrow_start: bool = False, arrow_end: bool = True, style: str = DEFAULT_EDGE_STYLE) -> Edge:
+    return canvas.add_edge(src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
 
 
 def remove_edge(canvas: Canvas, edge: Edge):
@@ -89,8 +89,8 @@ def set_edge_thickness(canvas: Canvas, edge: Edge, thickness: float):
     canvas.set_edge_thickness(edge, thickness)
 
 
-def set_edge_directed(canvas: Canvas, edge: Edge, directed: bool):
-    canvas.set_edge_directed(edge, directed)
+def set_edge_arrows(canvas: Canvas, edge: Edge, arrow_start: Optional[bool] = None, arrow_end: Optional[bool] = None):
+    canvas.set_edge_arrows(edge, arrow_start=arrow_start, arrow_end=arrow_end)
 
 
 def set_edge_style(canvas: Canvas, edge: Edge, style: str):
@@ -263,7 +263,8 @@ def _merge_into(dest: Canvas, src: Canvas) -> list[Node]:
     for edge in src.edges.values():
         dest.add_edge(
             node_map[edge.src.id], node_map[edge.dst.id],
-            color=edge.color, thickness=edge.thickness, directed=edge.directed, style=edge.style,
+            color=edge.color, thickness=edge.thickness,
+            arrow_start=edge.arrow_start, arrow_end=edge.arrow_end, style=edge.style,
         )
 
     return new_nodes
