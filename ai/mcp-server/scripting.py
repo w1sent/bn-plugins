@@ -27,6 +27,7 @@ from typing import Optional
 import binaryninja
 from binaryninja.enums import LogLevel
 
+from . import binary_context
 from .concurrency import log_tool_call, serialized
 from .core.logging import get_logger
 
@@ -129,6 +130,10 @@ def _run_script_body(script: str, cancel_event: threading.Event) -> str:
         "binaryninja": binaryninja,
         "should_cancel": cancel_event.is_set,
     }
+    try:
+        namespace["bv"] = binary_context.get_current_view()
+    except binary_context.NoBinaryOpenError:
+        pass  # leave `bv` unset -- scripts that don't touch it still work
     with _capture_output() as captured:
         exec(compile(script, "<mcp_execute_script>", "exec"), namespace)
     return captured.getvalue()
