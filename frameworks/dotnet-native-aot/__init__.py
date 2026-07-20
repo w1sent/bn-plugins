@@ -7,7 +7,6 @@ if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
 from binaryninja import PluginCommand
-from binaryninja.interaction import show_message_box
 
 from .core.framework_status import register_framework_indicator
 from .core.logging import get_logger
@@ -70,12 +69,10 @@ def _run_recover(bv):
         if result.warnings:
             msg += f"\n\n{len(result.warnings)} warning(s) -- see log."
         logger.info(msg)
-        show_message_box("NativeAOT Metadata Recovery", msg)
 
     def on_error(exc):
         bv.commit_undo_actions()
         logger.error(f"recovery failed: {exc}")
-        show_message_box("NativeAOT Metadata Recovery", f"Recovery failed: {exc}")
 
     bv.begin_undo_actions()
     api.recover_metadata(

@@ -9,7 +9,6 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 
 import binaryninja
 from binaryninja import Settings
-from binaryninja.interaction import show_message_box
 
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -85,15 +84,14 @@ def _start_command():
     try:
         api.start_server()
         status = api.get_server_status()
-        show_message_box("MCP Server", f"Listening on http://{status.host}:{status.port}")
+        logger.info(f"MCP Server: listening on http://{status.host}:{status.port}")
     except Exception as e:
         logger.error(f"failed to start MCP server: {e}")
-        show_message_box("MCP Server", f"Failed to start: {e}")
 
 
 def _stop_command():
     api.stop_server()
-    show_message_box("MCP Server", "Stopped")
+    logger.info("MCP Server: stopped")
 
 
 def _copy_api_key_command():
@@ -103,10 +101,10 @@ def _copy_api_key_command():
 
         clipboard = QApplication.clipboard()
         clipboard.setText(key)
-        show_message_box("MCP Server", "API key copied to clipboard" if key else "Auth is disabled (no key set)")
+        logger.info("MCP Server: API key copied to clipboard" if key else "MCP Server: auth is disabled (no key set)")
     except Exception as e:
         logger.warning(f"could not access clipboard: {e}")
-        show_message_box("MCP Server", f"API key: {key or '(auth disabled)'}")
+        logger.info(f"MCP Server: API key: {key or '(auth disabled)'}")
 
 
 def _register_gui_commands():

@@ -8,7 +8,7 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 
 from binaryninja import PluginCommand
 from binaryninja.enums import SymbolType
-from binaryninja.interaction import show_message_box, get_choice_input, get_int_input
+from binaryninja.interaction import get_choice_input, get_int_input
 from .core.logging import get_logger
 from .core.settings import register_setting
 from .core.tags import create_tag_type, tag_item
@@ -63,7 +63,9 @@ def _apply_results(bv, results, tag_type):
     msg = f"Renamed {successes} function(s)"
     if failures:
         msg += f", {failures} failed (see log)"
-    show_message_box("Auto Rename", msg)
+        logger.warning(msg)
+    else:
+        logger.info(msg)
 
 
 def _function_at(bv, addr):
@@ -73,7 +75,7 @@ def _function_at(bv, addr):
 
 def _run_rename_batch(bv, funcs, tag_type, title, anchor=None, restrict_to=None, options=None):
     if not funcs:
-        show_message_box("Auto Rename", "No auto-named functions found.")
+        logger.info("Auto Rename: no auto-named functions found.")
         return
 
     def on_complete(results):
@@ -93,7 +95,7 @@ def _run_rename_batch(bv, funcs, tag_type, title, anchor=None, restrict_to=None,
         )
     except OrderingError as e:
         bv.commit_undo_actions()
-        show_message_box("Auto Rename", f"This ordering requires a function to be selected: {e}")
+        logger.warning(f"Auto Rename: this ordering requires a function to be selected: {e}")
 
 
 def _rename_current(bv, func):
@@ -104,7 +106,7 @@ def _rename_current(bv, func):
 def _rename_selection(bv, addr, length):
     funcs = [f for f in bv.functions if addr <= f.start < addr + length]
     if not funcs:
-        show_message_box("Auto Rename", "No functions in the current selection.")
+        logger.info("Auto Rename: no functions in the current selection.")
         return
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
@@ -138,7 +140,7 @@ def _rename_filtered(bv, addr):
     try:
         compiled = re.compile(pattern)
     except re.error as e:
-        show_message_box("Auto Rename", f"Invalid regex: {e}")
+        logger.warning(f"Auto Rename: invalid regex: {e}")
         return
     funcs = [
         f
@@ -218,7 +220,9 @@ def _apply_var_results(bv, results, tag_type):
     msg = f"Renamed {successes} variable(s)"
     if failures:
         msg += f", {failures} failed (see log)"
-    show_message_box("Auto Rename", msg)
+        logger.warning(msg)
+    else:
+        logger.info(msg)
 
 
 def _run_var_batch(bv, call):
@@ -235,13 +239,13 @@ def _run_var_batch(bv, call):
 def _rename_variable_at_instr(bv, instr):
     func = instr.function.source_function
     if func is None:
-        show_message_box("Auto Rename", "Could not resolve the containing function.")
+        logger.warning("Auto Rename: could not resolve the containing function.")
         return
     candidates = [v for v in instr.vars if not func.is_var_user_defined(v)]
     if not candidates:
         candidates = list(instr.vars)
     if not candidates:
-        show_message_box("Auto Rename", "No variable found at this location.")
+        logger.info("Auto Rename: no variable found at this location.")
         return
     var_name = candidates[0].name
 
@@ -266,7 +270,7 @@ def _rename_function_variables(bv, func):
 def _rename_selection_variables(bv, addr, length):
     funcs = [f for f in bv.functions if addr <= f.start < addr + length]
     if not funcs:
-        show_message_box("Auto Rename", "No functions in the current selection.")
+        logger.info("Auto Rename: no functions in the current selection.")
         return
     _run_var_batch(bv, lambda **kw: api.rename_all_variables(bv, restrict_to=funcs, **kw))
 
@@ -288,7 +292,7 @@ def _rename_filtered_variables(bv, addr):
     try:
         re.compile(pattern)
     except re.error as e:
-        show_message_box("Auto Rename", f"Invalid regex: {e}")
+        logger.warning(f"Auto Rename: invalid regex: {e}")
         return
     _run_var_batch(bv, lambda **kw: api.rename_filtered_variables(bv, pattern, **kw))
 

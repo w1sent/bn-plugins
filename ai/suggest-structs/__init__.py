@@ -7,7 +7,7 @@ if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
 from binaryninja import PluginCommand
-from binaryninja.interaction import show_message_box, MultilineTextField, get_form_input
+from binaryninja.interaction import MultilineTextField, get_form_input
 from binaryninja.mainthread import execute_on_main_thread
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -83,7 +83,9 @@ def _apply_results(bv, results, tag_type_name):
     msg = f"Applied {successes} struct(s)"
     if failures:
         msg += f", {failures} failed (see log)"
-    show_message_box("Suggest Structs", msg)
+        logger.warning(msg)
+    else:
+        logger.info(msg)
 
 
 def _show_preview_and_apply(bv, func, var, result, tag_type_name):
@@ -91,7 +93,7 @@ def _show_preview_and_apply(bv, func, var, result, tag_type_name):
     preview (ADR-0027 -- BN's native type editor has no programmatic
     pre-fill API), apply on accept, do nothing on cancel."""
     if result.error:
-        show_message_box("Suggest Structs", f"Failed to suggest struct: {result.error}")
+        logger.warning(f"Suggest Structs: failed to suggest struct: {result.error}")
         return
 
     field = MultilineTextField("Struct definition (edit before applying):", result.definition)
@@ -103,15 +105,15 @@ def _show_preview_and_apply(bv, func, var, result, tag_type_name):
     bv.commit_undo_actions()
 
     if applied.error:
-        show_message_box("Suggest Structs", f"Failed to apply struct: {applied.error}")
+        logger.warning(f"Suggest Structs: failed to apply struct: {applied.error}")
     else:
-        show_message_box("Suggest Structs", f"Applied struct {applied.struct_name} to {var.name if var else '(range)'}")
+        logger.info(f"Suggest Structs: applied struct {applied.struct_name} to {var.name if var else '(range)'}")
 
 
 def _suggest_current(bv, addr):
     func, var = _hlil_var_at(bv, addr)
     if func is None or var is None:
-        show_message_box("Suggest Structs", "No pointer variable found near the cursor.")
+        logger.info("Suggest Structs: no pointer variable found near the cursor.")
         return
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
 
@@ -120,9 +122,8 @@ def _suggest_current(bv, addr):
         # only single mode needs the preview-then-apply step here.
         if result.error:
             logger.warning(f"suggest failed for {var.name} at {func.start:#x}: {result.error}")
-            show_message_box("Suggest Structs", f"Failed: {result.error}")
         elif result.applied:
-            show_message_box("Suggest Structs", f"Applied struct {result.struct_name} to {var.name}")
+            logger.info(f"Suggest Structs: applied struct {result.struct_name} to {var.name}")
         else:
             execute_on_main_thread(lambda: _show_preview_and_apply(bv, func, var, result, tag_type))
 
@@ -134,17 +135,17 @@ def _suggest_current(bv, addr):
 
 def _suggest_selection(bv, addr, length):
     if length <= 0:
-        show_message_box("Suggest Structs", "No selection.")
+        logger.info("Suggest Structs: no selection.")
         return
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     func, _ = _hlil_var_at(bv, addr)
 
     def on_complete(result):
         if result.applied:
-            show_message_box("Suggest Structs", f"Applied struct {result.struct_name}")
+            logger.info(f"Suggest Structs: applied struct {result.struct_name}")
             return
         if result.error:
-            show_message_box("Suggest Structs", f"Failed: {result.error}")
+            logger.warning(f"Suggest Structs: failed: {result.error}")
             return
         execute_on_main_thread(lambda: _show_preview_and_apply(bv, func, None, result, tag_type))
 

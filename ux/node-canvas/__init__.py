@@ -8,7 +8,6 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 
 import binaryninja
 from binaryninja import PluginCommand
-from binaryninja.interaction import show_message_box
 
 from .core.logging import get_logger
 from . import api, persistence
@@ -53,10 +52,10 @@ def _get_open_canvas_widget(bv):
 def _require_open_widget(bv):
     widget = _get_open_canvas_widget(bv)
     if widget is None:
-        show_message_box(
-            "Node Canvas",
-            "Open the Node Canvas sidebar panel first (click its icon in the sidebar), "
-            "then retry -- this inserts into whichever canvas is currently shown there.",
+        logger.info(
+            "Node Canvas: open the Node Canvas sidebar panel first (click its icon in "
+            "the sidebar), then retry -- this inserts into whichever canvas is "
+            "currently shown there."
         )
         return None
     return widget.canvas_widget

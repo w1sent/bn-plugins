@@ -1,6 +1,7 @@
 import logging
-import sys
 from pathlib import Path
+
+from binaryninja import log_debug, log_info, log_warn, log_error
 
 _LOG_DIR = Path.home() / ".binaryninja" / "logs"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -11,6 +12,20 @@ _LEVEL_MAP = {
     "WARNING": logging.WARNING,
     "ERROR": logging.ERROR,
 }
+
+_BN_LOG_FUNCS = {
+    logging.DEBUG: log_debug,
+    logging.INFO: log_info,
+    logging.WARNING: log_warn,
+    logging.ERROR: log_error,
+    logging.CRITICAL: log_error,
+}
+
+
+class _BNConsoleHandler(logging.Handler):
+    def emit(self, record):
+        log_func = _BN_LOG_FUNCS.get(record.levelno, log_info)
+        log_func(self.format(record), record.name)
 
 
 def get_logger(name, level="INFO"):
@@ -27,6 +42,10 @@ def get_logger(name, level="INFO"):
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     )
     logger.addHandler(file_handler)
+
+    console_handler = _BNConsoleHandler()
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
 
     return logger
 
