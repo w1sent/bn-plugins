@@ -1,5 +1,5 @@
 from core.retry import retry_with_backoff
-from core.exceptions import AITimeoutError
+from core.exceptions import AIConfigError, AITimeoutError
 
 
 def test_retry_succeeds_on_first_attempt():
@@ -36,16 +36,28 @@ def test_retry_raises_after_exhausting_attempts():
         assert len(calls) == 2
 
 
-def test_retry_does_not_retry_ai_timeout():
+def test_retry_does_not_retry_ai_config_error():
     calls = []
     def fn():
         calls.append(1)
-        raise AITimeoutError("timed out")
+        raise AIConfigError("bad config")
     try:
         retry_with_backoff(fn, backoff_steps=[0.01, 0.01])
-        assert False, "expected AITimeoutError"
-    except AITimeoutError:
+        assert False, "expected AIConfigError"
+    except AIConfigError:
         assert len(calls) == 1
+
+
+def test_retry_retries_ai_timeout():
+    calls = []
+    def fn():
+        calls.append(1)
+        if len(calls) < 2:
+            raise AITimeoutError("timed out")
+        return "ok"
+    result = retry_with_backoff(fn, backoff_steps=[0.01, 0.01])
+    assert result == "ok"
+    assert len(calls) == 2
 
 
 def test_retry_calls_on_warning():

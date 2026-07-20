@@ -1,6 +1,6 @@
 import time
 
-from .exceptions import AITimeoutError
+from .exceptions import AIConfigError
 
 
 def retry_with_backoff(
@@ -19,7 +19,7 @@ def retry_with_backoff(
     for attempt, delay in enumerate(backoff_steps):
         try:
             return fn(*args, **kwargs)
-        except AITimeoutError:
+        except AIConfigError:
             raise
         except Exception as exc:
             last_exc = exc
