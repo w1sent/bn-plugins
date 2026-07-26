@@ -88,7 +88,7 @@ def _apply_results(bv, results, tag_type_name):
         logger.info(msg)
 
 
-def _show_preview_and_apply(bv, func, var, result, tag_type_name):
+def _show_preview_and_apply(bv, func, var, result, tag_type_name, data_addr=None):
     """Runs on the main thread: pop the editable free-text C-syntax
     preview (ADR-0027 -- BN's native type editor has no programmatic
     pre-fill API), apply on accept, do nothing on cancel."""
@@ -101,7 +101,7 @@ def _show_preview_and_apply(bv, func, var, result, tag_type_name):
         return  # user cancelled
 
     bv.begin_undo_actions()
-    applied = api.apply_definition(bv, func, var, field.result, tag_type_name)
+    applied = api.apply_definition(bv, func, var, field.result, tag_type_name, data_addr=data_addr)
     bv.commit_undo_actions()
 
     if applied.error:
@@ -147,7 +147,9 @@ def _suggest_selection(bv, addr, length):
         if result.error:
             logger.warning(f"Suggest Structs: failed: {result.error}")
             return
-        execute_on_main_thread(lambda: _show_preview_and_apply(bv, func, None, result, tag_type))
+        execute_on_main_thread(
+            lambda: _show_preview_and_apply(bv, func, None, result, tag_type, data_addr=addr)
+        )
 
     api.suggest_struct_from_range(
         bv, addr, length, async_run=True, on_complete=on_complete, tag_type_name=tag_type,
@@ -217,7 +219,7 @@ PluginCommand.register_for_address(
     _is_valid_pointer_var,
 )
 PluginCommand.register_for_range(
-    "Suggest Structs\\Suggest Struct (Selection)",
+    "Suggest Structs\\Suggest Struct (Memory Region)",
     "Suggest a struct for the selected byte range using AI",
     _suggest_selection,
     _is_valid_selection,

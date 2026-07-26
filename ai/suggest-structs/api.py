@@ -610,12 +610,17 @@ def suggest_struct(
     return _run()
 
 
-def apply_definition(bv, func, var, definition, tag_type_name=None):
-    """Apply previously-previewed/edited C struct text to `var`. Used by
-    __init__.py after the user accepts the preview popup (single mode)."""
-    struct_name, applied, error = _apply_definition(bv, func, var, definition, tag_type_name)
+def apply_definition(bv, func, var, definition, tag_type_name=None, data_addr=None):
+    """Apply previously-previewed/edited C struct text to `var` (a
+    function-local pointer variable) or `data_addr` (a global/memory-region
+    address, when there's no variable -- e.g. the range-selection trigger).
+    Used by __init__.py after the user accepts the preview popup (single
+    mode)."""
+    struct_name, applied, error = _apply_definition(
+        bv, func, var, definition, tag_type_name, data_addr=data_addr
+    )
     return StructResult(
-        address=func.start,
+        address=data_addr if data_addr is not None else func.start,
         var_name=var.name if var else None,
         struct_name=struct_name,
         definition=definition,

@@ -27,9 +27,13 @@ in B and C; everything else is deterministic (no provider needed):
   G. confidence_threshold's effect on the batch candidate scan: a very low
      threshold should exclude nearly everything, a very high one should
      include at least as much as the default.
-  H. Applies a hand-written struct directly to a global via the
-     `data_addr` path (bypassing the LLM) and checks it landed as a value
-     type on that data variable, distinct from E's pointer-to-var case.
+  H. Applies a hand-written struct directly to a global via the private
+     `_apply_definition`'s `data_addr` path (bypassing the LLM) and checks
+     it landed as a value type on that data variable, distinct from E's
+     pointer-to-var case.
+  H2. Same as H but through the *public* api.apply_definition -- the actual
+      call __init__.py's range-selection preview-accept path makes. Guards
+      against that wrapper crashing on func=None / dropping data_addr.
   I. suggest_all() (the actual batch command's underlying call) -- runs
      unconditionally by default now that A-H are known-good (see
      RUN_BATCH_APPLY below to opt back out; it mutates the loaded bv,
@@ -314,6 +318,42 @@ def main():
                 _report("FAIL", "H: data_addr apply", f"type={new_type!r} tagged={has_tag}")
         except Exception as e:
             _report("FAIL", "H: data_addr apply", f"{e}\n{traceback.format_exc()}")
+
+    # -- H2. api.apply_definition (public wrapper) via data_addr ---------
+    # Regression guard: the range-selection trigger (__init__.py's
+    # _suggest_selection -> _show_preview_and_apply) calls the *public*
+    # api.apply_definition, not api._apply_definition -- H above only
+    # exercises the private helper directly, which didn't catch that the
+    # public wrapper used to hard-crash on func.start when func is None
+    # (selecting a memory region outside any function) and never threaded
+    # data_addr through at all.
+    print("\n-- H2. apply_definition (public wrapper, data_addr path) --")
+    if c_result is None or g_config_addr is None:
+        _report("SKIP", "H2: apply_definition data_addr", "no unapplied definition from section C")
+    else:
+        try:
+            applied = api.apply_definition(
+                bv, None, None, c_result.definition, tag_type, data_addr=g_config_addr,
+            )
+            if applied.error:
+                _report("FAIL", "H2: apply_definition data_addr", applied.error)
+            else:
+                data_var = bv.get_data_var_at(g_config_addr)
+                new_type = str(data_var.type) if data_var is not None else "?"
+                tags = bv.get_tags_at(g_config_addr)
+                has_tag = any(t.type.name == tag_type.name for t in tags)
+                print(f"  g_config type is now: {new_type}, tagged={has_tag}")
+                is_struct = applied.struct_name and str(applied.struct_name) in new_type
+                if is_struct and has_tag and applied.address == g_config_addr:
+                    _report("PASS", "H2: apply_definition data_addr", f"g_config -> {new_type}, tagged")
+                else:
+                    _report(
+                        "FAIL", "H2: apply_definition data_addr",
+                        f"type={new_type!r} struct_name={applied.struct_name!r} "
+                        f"tagged={has_tag} address={applied.address:#x}",
+                    )
+        except Exception as e:
+            _report("FAIL", "H2: apply_definition data_addr", f"{e}\n{traceback.format_exc()}")
 
     # -- I. suggest_all (the real batch command's call), mutates bv ------
     print("\n-- I. suggest_all (batch apply) --")

@@ -7,10 +7,10 @@ AI-driven struct suggestion from pointer access patterns.
 | Command | Context | Description |
 |---|---|---|
 | Suggest Struct | Address (right-click) | Suggest a struct for the pointer variable nearest the cursor |
-| Suggest Struct (Selection) | Selection (right-click) | Seed a struct sized to the selected byte range, then refine it |
+| Suggest Struct (Memory Region) | Selection (right-click) | Seed a struct sized to the selected byte range, then refine it |
 | Suggest Struct (Batch) | Toolbar / Command palette | Sweep every candidate pointer variable and untyped global, applying directly |
 
-`Suggest Struct` and `Suggest Struct (Selection)` preview before applying
+`Suggest Struct` and `Suggest Struct (Memory Region)` preview before applying
 when `suggest_structs.mode` is `single` (see [Preview](#preview) below).
 `Suggest Struct (Batch)` never previews and honors whichever mode is
 configured per candidate.
@@ -40,7 +40,7 @@ configured per candidate.
      (<kbd>Ctrl/Cmd+Z</kbd> reverts the whole session at once).
 4. **A specific memory region** — select a byte range in the hex view or
    linear/graph view, right-click → `Suggest Structs` →
-   `Suggest Struct (Selection)`. Same preview/apply behavior as above, but
+   `Suggest Struct (Memory Region)`. Same preview/apply behavior as above, but
    seeded from the selection's size instead of a variable's access
    pattern — useful when you already know "this N-byte blob is probably a
    struct" (e.g. while stepping through it in the debugger) but haven't
