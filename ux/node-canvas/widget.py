@@ -862,7 +862,13 @@ class CanvasWidget(QGraphicsView):
         if not targets:
             return
         logger.info("canvas %r: relayout (mode=%s) of %d node(s)%s", self.canvas.name, mode, len(targets), " (selection)" if selected else " (all)")
-        layout_new_nodes(self.canvas, targets, mode=mode)
+        # Unlike a brand-new call-tree/xref insertion, every target here
+        # already has (or very likely has) a live NodeItem -- prefer its
+        # actual current rendered size over the label-based estimate,
+        # which can be stale (a resolved/renamed function's on-screen text
+        # differs from the frozen Node.label the estimate reads).
+        size_of = lambda node: (self._node_render_width(node), self._node_render_height(node))
+        layout_new_nodes(self.canvas, targets, mode=mode, size_of=size_of)
 
     # -- panning (middle-drag) --------------------------------------
 

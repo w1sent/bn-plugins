@@ -11,6 +11,7 @@ import math
 import shutil
 import subprocess
 from collections import defaultdict, deque
+from typing import Callable, Optional
 
 from .core.logging import get_logger
 from .model import Canvas, Node
@@ -72,12 +73,27 @@ def estimate_node_height(label: str) -> float:
     return estimate_node_size(label)[1]
 
 
-def _existing_bbox(canvas: Canvas, exclude: set[int]):
+# A node's size for layout purposes: (width, height). Defaults to the
+# headless label-based estimate above -- the only option when nothing has
+# been rendered yet (a brand-new node, or any headless/execute_script use
+# per docs/adr/0029). widget.py's relayout, though, passes a lookup that
+# prefers each node's *actual* current rendered box (its label may have
+# been resolved/renamed/re-wrapped since insertion, so the stored
+# Node.label this estimate is based on can be stale) -- see
+# CanvasWidget._node_render_width/_node_render_height.
+SizeFn = Callable[[Node], tuple[float, float]]
+
+
+def _default_size(node: Node) -> tuple[float, float]:
+    return estimate_node_size(node.label)
+
+
+def _existing_bbox(canvas: Canvas, exclude: set[int], size_of: SizeFn):
     xs = [n.x for n in canvas.nodes.values() if n.id not in exclude]
     ys = [n.y for n in canvas.nodes.values() if n.id not in exclude]
     if not xs:
         return None
-    max_x = max(n.x + estimate_node_width(n.label) for n in canvas.nodes.values() if n.id not in exclude)
+    max_x = max(n.x + size_of(n)[0] for n in canvas.nodes.values() if n.id not in exclude)
     return min(xs), min(ys), max_x, max(ys)
 
 
@@ -85,25 +101,25 @@ def _dot_available() -> bool:
     return shutil.which("dot") is not None
 
 
-def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[float, float]]:
+def _layout_with_dot(new_nodes: list[Node], internal_edges, size_of: SizeFn) -> dict[int, tuple[float, float]]:
     # Without explicit width/height, dot assumes its own small default node
     # size and packs nodes far closer than the boxes widget.py actually
     # renders, so positions from an unmodified dot layout overlap once
     # drawn. fixedsize=true makes dot honor these exactly instead of
     # treating them as minimums; nodesep/ranksep add the same padding grid
-    # layout uses. Each node gets its own estimated (width, height) rather
-    # than shared constants, so long/wrapped or multi-line labels get their
-    # own extra breathing room -- in both dimensions -- instead of
-    # overlapping neighbors.
-    widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
-    heights = {n.id: estimate_node_height(n.label) for n in new_nodes}
+    # layout uses. Each node gets its own (width, height) from `size_of`
+    # rather than shared constants, so long/wrapped or multi-line labels
+    # get their own extra breathing room -- in both dimensions -- instead
+    # of overlapping neighbors.
+    sizes = {n.id: size_of(n) for n in new_nodes}
     nodesep_in = _PADDING / _DOT_SCALE
     ranksep_in = (_PADDING * 2) / _DOT_SCALE
 
     lines = ["digraph G {", f"  nodesep={nodesep_in};", f"  ranksep={ranksep_in};"]
     for node in new_nodes:
-        node_w_in = widths[node.id] / _DOT_SCALE
-        node_h_in = heights[node.id] / _DOT_SCALE
+        w, h = sizes[node.id]
+        node_w_in = w / _DOT_SCALE
+        node_h_in = h / _DOT_SCALE
         lines.append(f'  n{node.id} [label="", shape=box, fixedsize=true, width={node_w_in}, height={node_h_in}];')
     for src, dst in internal_edges:
         lines.append(f"  n{src.id} -> n{dst.id};")
@@ -132,14 +148,12 @@ def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[f
         # using this node's own width/height rather than shared constants.
         name, x, y = parts[1], float(parts[2]), float(parts[3])
         node_id = int(name[1:])
-        positions[node_id] = (
-            x * _DOT_SCALE - widths[node_id] / 2,
-            y * _DOT_SCALE - heights[node_id] / 2,
-        )
+        w, h = sizes[node_id]
+        positions[node_id] = (x * _DOT_SCALE - w / 2, y * _DOT_SCALE - h / 2)
     return positions
 
 
-def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges) -> dict[int, tuple[float, float]]:
+def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges, size_of: SizeFn) -> dict[int, tuple[float, float]]:
     adjacency = defaultdict(set)
     for src, dst in internal_edges:
         adjacency[src.id].add(dst.id)
@@ -165,8 +179,7 @@ def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges) -> dict[int, tu
     for node_id, rank in rank_of.items():
         by_rank[rank].append(node_id)
 
-    widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
-    heights = {n.id: estimate_node_height(n.label) for n in new_nodes}
+    sizes = {n.id: size_of(n) for n in new_nodes}
 
     positions = {}
     y = 0.0
@@ -174,14 +187,17 @@ def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges) -> dict[int, tu
         x = 0.0
         row_height = NODE_HEIGHT
         for node_id in sorted(by_rank[rank]):
+            w, h = sizes[node_id]
             positions[node_id] = (x, y)
-            x += widths[node_id] + _PADDING
-            row_height = max(row_height, heights[node_id])
+            x += w + _PADDING
+            row_height = max(row_height, h)
         y += row_height + _PADDING * 2
     return positions
 
 
-def layout_new_nodes(canvas: Canvas, new_nodes: list[Node], mode: str = "auto"):
+def layout_new_nodes(
+    canvas: Canvas, new_nodes: list[Node], mode: str = "auto", size_of: Optional[SizeFn] = None,
+):
     """Position `new_nodes` (already added to `canvas`) using a layered
     layout, then translate the whole cluster to sit clear of whatever
     other nodes are NOT in `new_nodes`. Nodes outside `new_nodes` are
@@ -190,9 +206,18 @@ def layout_new_nodes(canvas: Canvas, new_nodes: list[Node], mode: str = "auto"):
     relayouts just that subset clear of the rest.
 
     `mode`: "auto" (dot if available, else grid fallback), "dot" (force,
-    raises if the `dot` binary isn't available), or "grid" (force)."""
+    raises if the `dot` binary isn't available), or "grid" (force).
+
+    `size_of`: per-node (width, height), defaulting to the headless
+    label-based estimate. Callers that already have real rendered sizes
+    for some nodes (widget.py's relayout, re-laying out nodes that already
+    have a live NodeItem) should pass a lookup that prefers those -- a
+    node's stored label can be stale relative to what's actually on
+    screen (a resolved/renamed function, live wrapping), so the estimate
+    alone can under- or over-reserve space for an already-rendered node."""
     if not new_nodes:
         return
+    size_of = size_of or _default_size
 
     new_ids = {n.id for n in new_nodes}
     internal_edges = [
@@ -202,17 +227,17 @@ def layout_new_nodes(canvas: Canvas, new_nodes: list[Node], mode: str = "auto"):
     ]
 
     if mode == "grid":
-        positions = _layout_with_bfs_grid(new_nodes, internal_edges)
+        positions = _layout_with_bfs_grid(new_nodes, internal_edges, size_of)
     elif mode == "dot":
-        positions = _layout_with_dot(new_nodes, internal_edges)
+        positions = _layout_with_dot(new_nodes, internal_edges, size_of)
     elif _dot_available():
         try:
-            positions = _layout_with_dot(new_nodes, internal_edges)
+            positions = _layout_with_dot(new_nodes, internal_edges, size_of)
         except Exception as exc:
             logger.warning("dot layout failed (%s), falling back to grid", exc)
-            positions = _layout_with_bfs_grid(new_nodes, internal_edges)
+            positions = _layout_with_bfs_grid(new_nodes, internal_edges, size_of)
     else:
-        positions = _layout_with_bfs_grid(new_nodes, internal_edges)
+        positions = _layout_with_bfs_grid(new_nodes, internal_edges, size_of)
 
     for node in new_nodes:
         if node.id not in positions:
@@ -221,7 +246,7 @@ def layout_new_nodes(canvas: Canvas, new_nodes: list[Node], mode: str = "auto"):
     min_x = min(x for x, _ in positions.values())
     min_y = min(y for _, y in positions.values())
 
-    bbox = _existing_bbox(canvas, exclude=new_ids)
+    bbox = _existing_bbox(canvas, exclude=new_ids, size_of=size_of)
     if bbox is None:
         offset_x, offset_y = 0.0, 0.0
     else:
