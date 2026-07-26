@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetrics,
     QImage,
     QPainter,
     QPainterPath,
@@ -50,7 +51,12 @@ from PySide6.QtWidgets import (
 
 from .core.logging import get_logger
 from . import formats, persistence
-from .layout import NODE_HEIGHT as _NODE_HEIGHT, NODE_WIDTH as _NODE_WIDTH, layout_new_nodes
+from .layout import (
+    NODE_HEIGHT as _NODE_HEIGHT,
+    NODE_WIDTH as _NODE_WIDTH,
+    estimate_node_width,
+    layout_new_nodes,
+)
 from .model import DEFAULT_EDGE_STYLE, EDGE_STYLES, Canvas, Group, Node
 
 logger = get_logger("node_canvas")
@@ -64,6 +70,7 @@ _NODE_ICONS = {
 }
 _UNRESOLVED_ICON = "⚠"  # ⚠ -- marks an address that no longer resolves
 _ARROW_SIZE = 9
+_NODE_LABEL_MARGIN = 24.0  # left/right inset a NodeItem reserves around its label text
 _GROUP_PADDING = 20
 _GROUP_LABEL_HEIGHT = 16
 _EDGE_STYLE_LABELS = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-Dot"}
@@ -275,6 +282,17 @@ class NodeItem(QGraphicsRectItem):
         self.setPen(QPen(QColor(border_color), 2))
         self._label_item.setText(label)
         self._label_item.setBrush(QBrush(QColor("white")))
+
+        # Resize to fit the actual rendered label (never smaller than the
+        # canonical box) instead of clipping/overlapping neighbors -- see
+        # layout.py's estimate_node_width for the headless-safe approximation
+        # of this used to space nodes *before* real font metrics exist.
+        width = max(_NODE_WIDTH, QFontMetrics(self._label_item.font()).horizontalAdvance(label) + _NODE_LABEL_MARGIN)
+        if width != self.rect().width():
+            self.setRect(0, 0, width, _NODE_HEIGHT)
+            self._canvas_widget.reposition_edges_for(self.node)
+            if self.node.group is not None:
+                self._canvas_widget.resize_boundary_for(self.node.group)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -615,12 +633,23 @@ class CanvasWidget(QGraphicsView):
             return self._group_items.get(element.id)
         return None
 
+    def _node_render_width(self, node: Node) -> float:
+        """Actual rendered width if `node`'s item already exists in this
+        scene build, else the headless estimate layout.py uses -- keeps
+        group boundaries correctly sized whether or not their members have
+        been constructed yet (rebuild_scene creates group boxes before
+        nodes)."""
+        item = self._node_items.get(node.id)
+        if item is not None:
+            return item.rect().width()
+        return estimate_node_width(node.label)
+
     def _group_bounds(self, group: Group) -> tuple[float, float, float, float]:
         xs, ys = [], []
 
         def collect(g: Group):
             for node in g.member_nodes:
-                xs.extend([node.x, node.x + _NODE_WIDTH])
+                xs.extend([node.x, node.x + self._node_render_width(node)])
                 ys.extend([node.y, node.y + _NODE_HEIGHT])
             for child in g.child_groups:
                 collect(child)

@@ -26,7 +26,21 @@ NODE_HEIGHT = 40.0
 _PADDING = 40.0  # minimum gap between adjacent node edges, in both engines
 
 _RANK_SPACING = NODE_HEIGHT + _PADDING * 2
-_COL_SPACING = NODE_WIDTH + _PADDING
+
+# Headless (no Qt) estimate of a node's rendered width, used to size layout
+# spacing here and, via widget.py's import of this same function, group
+# boundary boxes -- before any real font metrics are available (widget.py
+# is the only module allowed to import Qt, per docs/adr/0029). Errs
+# generous: the real QFontMetrics measurement in widget.py's NodeItem is
+# the source of truth for what actually gets drawn, this only needs to
+# reserve *enough* room that layout doesn't pack nodes closer than the
+# real boxes will be.
+_CHAR_WIDTH_ESTIMATE = 7.5
+_LABEL_PADDING = 36.0
+
+
+def estimate_node_width(label: str) -> float:
+    return max(NODE_WIDTH, len(label) * _CHAR_WIDTH_ESTIMATE + _LABEL_PADDING)
 
 
 def _existing_bbox(canvas: Canvas, exclude: set[int]):
@@ -34,7 +48,8 @@ def _existing_bbox(canvas: Canvas, exclude: set[int]):
     ys = [n.y for n in canvas.nodes.values() if n.id not in exclude]
     if not xs:
         return None
-    return min(xs), min(ys), max(xs), max(ys)
+    max_x = max(n.x + estimate_node_width(n.label) for n in canvas.nodes.values() if n.id not in exclude)
+    return min(xs), min(ys), max_x, max(ys)
 
 
 def _dot_available() -> bool:
@@ -43,18 +58,21 @@ def _dot_available() -> bool:
 
 def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[float, float]]:
     # Without explicit width/height, dot assumes its own small default node
-    # size and packs nodes far closer than the _NODE_WIDTH x _NODE_HEIGHT
-    # boxes widget.py actually renders, so positions from an unmodified
-    # dot layout overlap once drawn. fixedsize=true makes dot honor these
-    # exactly instead of treating them as minimums; nodesep/ranksep add
-    # the same padding grid layout uses.
-    node_w_in = NODE_WIDTH / _DOT_SCALE
+    # size and packs nodes far closer than the boxes widget.py actually
+    # renders, so positions from an unmodified dot layout overlap once
+    # drawn. fixedsize=true makes dot honor these exactly instead of
+    # treating them as minimums; nodesep/ranksep add the same padding grid
+    # layout uses. Each node gets its own estimated width (see
+    # estimate_node_width) rather than a shared constant, so long labels
+    # get their own extra breathing room instead of overlapping neighbors.
+    widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
     node_h_in = NODE_HEIGHT / _DOT_SCALE
     nodesep_in = _PADDING / _DOT_SCALE
     ranksep_in = (_PADDING * 2) / _DOT_SCALE
 
     lines = ["digraph G {", f"  nodesep={nodesep_in};", f"  ranksep={ranksep_in};"]
     for node in new_nodes:
+        node_w_in = widths[node.id] / _DOT_SCALE
         lines.append(f'  n{node.id} [label="", shape=box, fixedsize=true, width={node_w_in}, height={node_h_in}];')
     for src, dst in internal_edges:
         lines.append(f"  n{src.id} -> n{dst.id};")
@@ -79,10 +97,11 @@ def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[f
         # node <name> <x> <y> <width> <height> ... -- x/y are the node's
         # CENTER in dot's plain output, but positions here are consumed as
         # a top-left corner (see widget.py's NodeItem: setPos == top-left
-        # of its (0, 0, width, height) rect), so re-center on conversion.
+        # of its (0, 0, width, height) rect), so re-center on conversion,
+        # using this node's own width rather than a shared constant.
         name, x, y = parts[1], float(parts[2]), float(parts[3])
         node_id = int(name[1:])
-        positions[node_id] = (x * _DOT_SCALE - NODE_WIDTH / 2, y * _DOT_SCALE - NODE_HEIGHT / 2)
+        positions[node_id] = (x * _DOT_SCALE - widths[node_id] / 2, y * _DOT_SCALE - NODE_HEIGHT / 2)
     return positions
 
 
@@ -112,10 +131,14 @@ def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges) -> dict[int, tu
     for node_id, rank in rank_of.items():
         by_rank[rank].append(node_id)
 
+    widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
+
     positions = {}
     for rank, node_ids in by_rank.items():
-        for col, node_id in enumerate(sorted(node_ids)):
-            positions[node_id] = (col * _COL_SPACING, rank * _RANK_SPACING)
+        x = 0.0
+        for node_id in sorted(node_ids):
+            positions[node_id] = (x, rank * _RANK_SPACING)
+            x += widths[node_id] + _PADDING
     return positions
 
 
@@ -163,8 +186,11 @@ def layout_new_nodes(canvas: Canvas, new_nodes: list[Node], mode: str = "auto"):
     if bbox is None:
         offset_x, offset_y = 0.0, 0.0
     else:
+        # max_x from _existing_bbox is already a right edge (node.x + its
+        # estimated rendered width), so the buffer here only needs to be a
+        # clearance gap, not another full column width on top of that.
         _, _, max_x, _ = bbox
-        offset_x = max_x + _COL_SPACING * 2 - min_x
+        offset_x = max_x + _PADDING * 2 - min_x
         offset_y = -min_y
 
     logger.debug("canvas %r: laying out %d node(s), mode=%s", canvas.name, len(new_nodes), mode)
