@@ -119,6 +119,26 @@ def _ensure_node(canvas: Canvas, address: int, label: str, new_nodes: list[Node]
     return node
 
 
+def _find_edge(canvas: Canvas, src: Node, dst: Node) -> Optional[Edge]:
+    for edge in canvas.edges.values():
+        if edge.src is src and edge.dst is dst:
+            return edge
+    return None
+
+
+def _ensure_edge(canvas: Canvas, src: Node, dst: Node) -> Edge:
+    """Same-direction (src, dst) pair reuses its existing Edge rather than
+    adding a duplicate -- needed both across repeat auto-populate runs (the
+    same caller/callee inserted again) and within a single run, since a
+    BN Function's `callers`/`callees` lists one entry per call *site*, so a
+    function called from three places in the same caller would otherwise
+    produce three edges between the same two nodes."""
+    edge = _find_edge(canvas, src, dst)
+    if edge is None:
+        edge = canvas.add_edge(src, dst)
+    return edge
+
+
 def _add_call_tree(bv, canvas: Canvas, address: int, depth: int, direction: str) -> list[Node]:
     functions = bv.get_functions_at(address) or bv.get_functions_containing(address)
     if not functions:
@@ -138,9 +158,9 @@ def _add_call_tree(bv, canvas: Canvas, address: int, depth: int, direction: str)
                 for neighbor in neighbors:
                     neighbor_node = _ensure_node(canvas, neighbor.start, neighbor.name, new_nodes)
                     if direction == "callers":
-                        canvas.add_edge(neighbor_node, node)
+                        _ensure_edge(canvas, neighbor_node, node)
                     else:
-                        canvas.add_edge(node, neighbor_node)
+                        _ensure_edge(canvas, node, neighbor_node)
                     if neighbor.start not in seen_addresses:
                         seen_addresses.add(neighbor.start)
                         next_frontier.append((neighbor, neighbor_node))
