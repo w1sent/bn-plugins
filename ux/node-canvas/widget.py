@@ -9,6 +9,7 @@ CanvasPanel wraps it with a canvas-switcher tab bar and a small toolbar.
 from __future__ import annotations
 
 import math
+import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QSpinBox,
     QTabBar,
     QToolButton,
@@ -53,7 +55,9 @@ from .core.logging import get_logger
 from . import formats, persistence
 from .layout import (
     NODE_HEIGHT as _NODE_HEIGHT,
+    NODE_MAX_WIDTH as _NODE_MAX_WIDTH,
     NODE_WIDTH as _NODE_WIDTH,
+    estimate_node_height,
     estimate_node_width,
     layout_new_nodes,
 )
@@ -71,6 +75,7 @@ _NODE_ICONS = {
 _UNRESOLVED_ICON = "⚠"  # ⚠ -- marks an address that no longer resolves
 _ARROW_SIZE = 9
 _NODE_LABEL_MARGIN = 24.0  # left/right inset a NodeItem reserves around its label text
+_NODE_LABEL_VMARGIN = 20.0  # top/bottom inset a NodeItem reserves around its label text
 _GROUP_PADDING = 20
 _GROUP_LABEL_HEIGHT = 16
 _EDGE_STYLE_LABELS = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-Dot"}
@@ -168,6 +173,10 @@ class FormDialog(QDialog):
             elif kind == "preview":
                 w = QLineEdit(str(default or ""))
                 w.setReadOnly(True)
+            elif kind == "multiline":
+                w = QPlainTextEdit(str(default or ""))
+                w.setTabChangesFocus(True)
+                w.setFixedHeight(80)
             else:  # "text"
                 w = QLineEdit(str(default or ""))
             self._widgets[spec["key"]] = w
@@ -215,6 +224,8 @@ class FormDialog(QDialog):
             w.valueChanged.connect(lambda _: self._on_change(self))
         elif isinstance(w, QCheckBox):
             w.toggled.connect(lambda _: self._on_change(self))
+        elif isinstance(w, QPlainTextEdit):
+            w.textChanged.connect(lambda: self._on_change(self))
         elif isinstance(w, QLineEdit):
             w.textChanged.connect(lambda _: self._on_change(self))
 
@@ -232,6 +243,8 @@ class FormDialog(QDialog):
                 result[key] = w.value()
             elif isinstance(w, QCheckBox):
                 result[key] = w.isChecked()
+            elif isinstance(w, QPlainTextEdit):
+                result[key] = w.toPlainText()
             else:
                 result[key] = w.text()
         return result
@@ -242,6 +255,56 @@ class FormDialog(QDialog):
         if dlg.exec() == QDialog.Accepted:
             return dlg.values()
         return None
+
+
+# -- node label wrapping --------------------------------------------------
+
+
+def _wrap_paragraph(text: str, fm: QFontMetrics, max_width: float) -> list[str]:
+    """Wrap one line of text (no embedded newlines) to `max_width`, breaking
+    on whitespace/underscores where possible (the natural separators in
+    both sentences and C identifiers). A single token still wider than
+    `max_width` on its own gets a hard character break -- binary search for
+    the longest prefix that fits, so it's exact against the real font
+    rather than a guess."""
+    if not text or fm.horizontalAdvance(text) <= max_width:
+        return [text]
+
+    tokens = re.findall(r"[^ _]+[ _]?|[ _]", text)
+
+    lines = []
+    line = ""
+    for token in tokens:
+        candidate = line + token
+        if line and fm.horizontalAdvance(candidate) > max_width:
+            lines.append(line.rstrip())
+            line = token
+        else:
+            line = candidate
+        while fm.horizontalAdvance(line) > max_width and len(line) > 1:
+            lo, hi = 1, len(line)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if fm.horizontalAdvance(line[:mid]) <= max_width:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            lines.append(line[:lo])
+            line = line[lo:]
+    if line:
+        lines.append(line.rstrip())
+    return lines or [""]
+
+
+def _wrap_label(text: str, fm: QFontMetrics, max_width: float) -> list[str]:
+    """Wrap `text` to fit `max_width` per line. Each of the caller's own
+    explicit line breaks (multi-line custom node text) is preserved as its
+    own paragraph and wrapped independently, rather than being merged with
+    adjacent lines."""
+    lines = []
+    for paragraph in text.split("\n"):
+        lines.extend(_wrap_paragraph(paragraph, fm, max_width))
+    return lines
 
 
 class NodeItem(QGraphicsRectItem):
@@ -280,16 +343,26 @@ class NodeItem(QGraphicsRectItem):
         border_color = self.node.border_color or ("#e63946" if unresolved else "#1d3557")
         self.setBrush(QBrush(QColor(fill_color)))
         self.setPen(QPen(QColor(border_color), 2))
-        self._label_item.setText(label)
-        self._label_item.setBrush(QBrush(QColor("white")))
 
         # Resize to fit the actual rendered label (never smaller than the
-        # canonical box) instead of clipping/overlapping neighbors -- see
-        # layout.py's estimate_node_width for the headless-safe approximation
-        # of this used to space nodes *before* real font metrics exist.
-        width = max(_NODE_WIDTH, QFontMetrics(self._label_item.font()).horizontalAdvance(label) + _NODE_LABEL_MARGIN)
-        if width != self.rect().width():
-            self.setRect(0, 0, width, _NODE_HEIGHT)
+        # canonical box) instead of clipping/overlapping neighbors. Past
+        # NODE_MAX_WIDTH, wrap onto more lines instead of growing wider
+        # still -- a long name (or a custom node's own explicit "\n" text)
+        # shouldn't force scrolling far horizontally to see one whole node.
+        # See layout.py's estimate_node_size for the headless-safe
+        # approximation of this used to space nodes before real font
+        # metrics exist.
+        fm = QFontMetrics(self._label_item.font())
+        max_content_width = _NODE_MAX_WIDTH - _NODE_LABEL_MARGIN
+        wrapped = "\n".join(_wrap_label(label, fm, max_content_width))
+        self._label_item.setText(wrapped)
+        self._label_item.setBrush(QBrush(QColor("white")))
+
+        text_rect = self._label_item.boundingRect()
+        width = max(_NODE_WIDTH, text_rect.width() + _NODE_LABEL_MARGIN)
+        height = max(_NODE_HEIGHT, text_rect.height() + _NODE_LABEL_VMARGIN)
+        if width != self.rect().width() or height != self.rect().height():
+            self.setRect(0, 0, width, height)
             self._canvas_widget.reposition_edges_for(self.node)
             if self.node.group is not None:
                 self._canvas_widget.resize_boundary_for(self.node.group)
@@ -644,13 +717,21 @@ class CanvasWidget(QGraphicsView):
             return item.rect().width()
         return estimate_node_width(node.label)
 
+    def _node_render_height(self, node: Node) -> float:
+        """Same as _node_render_width, but for height -- a wrapped long
+        label or a multi-line custom node can be taller than NODE_HEIGHT."""
+        item = self._node_items.get(node.id)
+        if item is not None:
+            return item.rect().height()
+        return estimate_node_height(node.label)
+
     def _group_bounds(self, group: Group) -> tuple[float, float, float, float]:
         xs, ys = [], []
 
         def collect(g: Group):
             for node in g.member_nodes:
                 xs.extend([node.x, node.x + self._node_render_width(node)])
-                ys.extend([node.y, node.y + _NODE_HEIGHT])
+                ys.extend([node.y, node.y + self._node_render_height(node)])
             for child in g.child_groups:
                 collect(child)
 
@@ -886,7 +967,7 @@ class CanvasWidget(QGraphicsView):
             self.canvas.collapse_group(group)
 
     def _action_add_node(self):
-        values = FormDialog.get(self, "Add Node", [_field("label", "Label")])
+        values = FormDialog.get(self, "Add Node", [_field("label", "Label", kind="multiline")])
         if values and values["label"]:
             pos = self.mapToScene(self.viewport().rect().center())
             self.canvas.add_node(values["label"], x=pos.x(), y=pos.y())
@@ -1003,7 +1084,7 @@ class CanvasWidget(QGraphicsView):
 
     def _action_edit_node(self, node: Node):
         values = FormDialog.get(self, "Edit Node", [
-            _field("label", "Label", default=node.label),
+            _field("label", "Label", kind="multiline", default=node.label),
             _field("color", "Fill color (blank = default)", "color", default=node.color or ""),
             _field("border_color", "Border color (blank = default)", "color", default=node.border_color or ""),
         ])

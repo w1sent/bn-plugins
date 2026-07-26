@@ -7,6 +7,7 @@ otherwise. Never repositions a node the caller didn't include in
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 from collections import defaultdict, deque
@@ -25,22 +26,50 @@ NODE_WIDTH = 140.0
 NODE_HEIGHT = 40.0
 _PADDING = 40.0  # minimum gap between adjacent node edges, in both engines
 
-_RANK_SPACING = NODE_HEIGHT + _PADDING * 2
+# Cap on a node's width before its label wraps onto more lines instead of
+# growing wider -- long names shouldn't force scrolling far horizontally to
+# see one whole node.
+NODE_MAX_WIDTH = 260.0
 
-# Headless (no Qt) estimate of a node's rendered width, used to size layout
-# spacing here and, via widget.py's import of this same function, group
-# boundary boxes -- before any real font metrics are available (widget.py
-# is the only module allowed to import Qt, per docs/adr/0029). Errs
-# generous: the real QFontMetrics measurement in widget.py's NodeItem is
-# the source of truth for what actually gets drawn, this only needs to
-# reserve *enough* room that layout doesn't pack nodes closer than the
-# real boxes will be.
+# Headless (no Qt) estimate of a node's rendered (width, height), used to
+# size layout spacing here and, via widget.py's import of these same
+# functions, group boundary boxes -- before any real font metrics are
+# available (widget.py is the only module allowed to import Qt, per
+# docs/adr/0029). Errs generous: the real QFontMetrics measurement (and
+# actual wrapping) in widget.py's NodeItem is the source of truth for what
+# actually gets drawn, this only needs to reserve *enough* room in both
+# dimensions that layout doesn't pack nodes closer than the real boxes will
+# be -- including a multi-line custom node's own explicit "\n" breaks.
 _CHAR_WIDTH_ESTIMATE = 7.5
 _LABEL_PADDING = 36.0
+_LINE_HEIGHT_ESTIMATE = 19.0
+_LABEL_VMARGIN = NODE_HEIGHT - _LINE_HEIGHT_ESTIMATE
+
+
+def _estimate_paragraph_lines(paragraph: str, max_content_width: float) -> int:
+    raw_width = len(paragraph) * _CHAR_WIDTH_ESTIMATE
+    if raw_width <= max_content_width or max_content_width <= 0:
+        return 1
+    return math.ceil(raw_width / max_content_width)
+
+
+def estimate_node_size(label: str) -> tuple[float, float]:
+    max_content_width = NODE_MAX_WIDTH - _LABEL_PADDING
+    paragraphs = label.split("\n")
+    total_lines = sum(_estimate_paragraph_lines(p, max_content_width) for p in paragraphs) or 1
+    widest_paragraph = max((len(p) * _CHAR_WIDTH_ESTIMATE for p in paragraphs), default=0.0)
+
+    width = max(NODE_WIDTH, min(widest_paragraph, max_content_width) + _LABEL_PADDING)
+    height = max(NODE_HEIGHT, total_lines * _LINE_HEIGHT_ESTIMATE + _LABEL_VMARGIN)
+    return width, height
 
 
 def estimate_node_width(label: str) -> float:
-    return max(NODE_WIDTH, len(label) * _CHAR_WIDTH_ESTIMATE + _LABEL_PADDING)
+    return estimate_node_size(label)[0]
+
+
+def estimate_node_height(label: str) -> float:
+    return estimate_node_size(label)[1]
 
 
 def _existing_bbox(canvas: Canvas, exclude: set[int]):
@@ -62,17 +91,19 @@ def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[f
     # renders, so positions from an unmodified dot layout overlap once
     # drawn. fixedsize=true makes dot honor these exactly instead of
     # treating them as minimums; nodesep/ranksep add the same padding grid
-    # layout uses. Each node gets its own estimated width (see
-    # estimate_node_width) rather than a shared constant, so long labels
-    # get their own extra breathing room instead of overlapping neighbors.
+    # layout uses. Each node gets its own estimated (width, height) rather
+    # than shared constants, so long/wrapped or multi-line labels get their
+    # own extra breathing room -- in both dimensions -- instead of
+    # overlapping neighbors.
     widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
-    node_h_in = NODE_HEIGHT / _DOT_SCALE
+    heights = {n.id: estimate_node_height(n.label) for n in new_nodes}
     nodesep_in = _PADDING / _DOT_SCALE
     ranksep_in = (_PADDING * 2) / _DOT_SCALE
 
     lines = ["digraph G {", f"  nodesep={nodesep_in};", f"  ranksep={ranksep_in};"]
     for node in new_nodes:
         node_w_in = widths[node.id] / _DOT_SCALE
+        node_h_in = heights[node.id] / _DOT_SCALE
         lines.append(f'  n{node.id} [label="", shape=box, fixedsize=true, width={node_w_in}, height={node_h_in}];')
     for src, dst in internal_edges:
         lines.append(f"  n{src.id} -> n{dst.id};")
@@ -98,10 +129,13 @@ def _layout_with_dot(new_nodes: list[Node], internal_edges) -> dict[int, tuple[f
         # CENTER in dot's plain output, but positions here are consumed as
         # a top-left corner (see widget.py's NodeItem: setPos == top-left
         # of its (0, 0, width, height) rect), so re-center on conversion,
-        # using this node's own width rather than a shared constant.
+        # using this node's own width/height rather than shared constants.
         name, x, y = parts[1], float(parts[2]), float(parts[3])
         node_id = int(name[1:])
-        positions[node_id] = (x * _DOT_SCALE - widths[node_id] / 2, y * _DOT_SCALE - NODE_HEIGHT / 2)
+        positions[node_id] = (
+            x * _DOT_SCALE - widths[node_id] / 2,
+            y * _DOT_SCALE - heights[node_id] / 2,
+        )
     return positions
 
 
@@ -132,13 +166,18 @@ def _layout_with_bfs_grid(new_nodes: list[Node], internal_edges) -> dict[int, tu
         by_rank[rank].append(node_id)
 
     widths = {n.id: estimate_node_width(n.label) for n in new_nodes}
+    heights = {n.id: estimate_node_height(n.label) for n in new_nodes}
 
     positions = {}
-    for rank, node_ids in by_rank.items():
+    y = 0.0
+    for rank in sorted(by_rank):
         x = 0.0
-        for node_id in sorted(node_ids):
-            positions[node_id] = (x, rank * _RANK_SPACING)
+        row_height = NODE_HEIGHT
+        for node_id in sorted(by_rank[rank]):
+            positions[node_id] = (x, y)
             x += widths[node_id] + _PADDING
+            row_height = max(row_height, heights[node_id])
+        y += row_height + _PADDING * 2
     return positions
 
 
