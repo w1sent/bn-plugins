@@ -227,8 +227,25 @@ Server → Copy API Key, and send it as `Authorization: Bearer <key>`.
 
 ## Dependencies
 
-- `mcp` (vendored per-plugin on install)
+- `mcp` (vendored per-plugin on install), pinned to `<2.0` (see
+  [ADR-0032](../../docs/adr/0032-pin-third-party-plugin-dependencies.md))
 - No other deps beyond the BN API + `core/` + `mcp`
+
+## Open migration: `mcp` 2.0
+
+Upstream's `mcp` Python SDK released a stable 2.0.0 on 2026-07-28, alongside a
+new MCP spec version that moves the protocol from stateful/bidirectional to
+stateless request/response. It renames `mcp.server.fastmcp.FastMCP` to
+`mcp.server.mcpserver.MCPServer` (module `mcp.server.fastmcp` is gone) and
+moves `Image` to `mcp.server.mcpserver`; `server.py` and `gui.py` import both
+directly. The high-level `@mcp.tool` / `@mcp.resource` / `@mcp.prompt`
+decorator API used throughout `administration.py`, `reading.py`, and
+`prompts.py` appears unchanged in shape, so the migration is expected to be
+mostly a rename plus verifying the new stateless request/response behavior
+against this plugin's tool-call serialization (see Architecture). Pinned to
+`mcp<2.0` for now (see [ADR-0033](../../docs/adr/0033-cutting-edge-check-upstream-versions-on-change.md))
+since the release is brand new and not yet battle-tested; revisit once it has
+had time to stabilize.
 
 ## Future improvements
 
