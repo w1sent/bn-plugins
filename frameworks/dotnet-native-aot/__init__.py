@@ -8,6 +8,7 @@ if _deps.is_dir() and str(_deps) not in sys.path:
 
 from binaryninja import PluginCommand
 
+from .core.evidence import record_evidence
 from .core.framework_status import register_framework_indicator
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -86,6 +87,21 @@ def _run_recover(bv):
     )
 
 
+def _record_evidence(bv, candidates):
+    """Feed this detector's result into the shared evidence store (see
+    docs/adr/0035-shared-evidence-store-and-context-prompt.md), so the AI
+    context prompt and other tools can see it without re-running detection."""
+    if candidates:
+        findings = [
+            f"ReadyToRun module detected at {c.address:#x} "
+            f"(RTR v{c.major_version}.{c.minor_version}, {len(c.sections)} section(s))"
+            for c in candidates
+        ]
+    else:
+        findings = ["No ReadyToRun module detected"]
+    record_evidence(bv, "dotnet_native_aot", findings)
+
+
 def _has_rtr_module(bv):
     """Cached (per-bv, session-only) check for whether a ReadyToRun
     directory is actually present -- locate_modules' signature-scan
@@ -97,11 +113,13 @@ def _has_rtr_module(bv):
         return cached
 
     try:
-        found = bool(rtr.locate_modules(bv))
+        candidates = rtr.locate_modules(bv)
     except Exception:
-        found = False
+        candidates = []
 
+    found = bool(candidates)
     bv.session_data["dotnet_native_aot.has_rtr_module"] = found
+    _record_evidence(bv, candidates)
     return found
 
 
