@@ -20,7 +20,7 @@ import json
 import re
 
 from .core.logging import get_logger
-from .model import DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, EDGE_STYLES, Canvas
+from .model import DEFAULT_EDGE_ROUTING, DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, EDGE_ROUTINGS, EDGE_STYLES, Canvas
 
 logger = get_logger("node_canvas")
 
@@ -135,6 +135,8 @@ def export_dot(canvas: Canvas, path: str):
         attrs.append(f"penwidth={edge.thickness}")
         if edge.style != DEFAULT_EDGE_STYLE:
             attrs.append(f'style="{edge.style}"')
+        if edge.routing != DEFAULT_EDGE_ROUTING:
+            attrs.append(f'routing="{edge.routing}"')
         if edge.arrow_start and edge.arrow_end:
             attrs.append('dir="both"')
         elif edge.arrow_start and not edge.arrow_end:
@@ -295,7 +297,10 @@ def import_dot(path: str, name: str | None = None) -> Canvas:
             style = attrs.get("style", DEFAULT_EDGE_STYLE)
             if style not in EDGE_STYLES:
                 style = DEFAULT_EDGE_STYLE
-            canvas.add_edge(src, dst, color=attrs.get("color"), thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
+            routing = attrs.get("routing", DEFAULT_EDGE_ROUTING)
+            if routing not in EDGE_ROUTINGS:
+                routing = DEFAULT_EDGE_ROUTING
+            canvas.add_edge(src, dst, color=attrs.get("color"), thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style, routing=routing)
             continue
 
         attr_list_match = _ATTR_LIST_RE.search(token)

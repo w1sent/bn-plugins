@@ -105,9 +105,20 @@ DEFAULT_EDGE_THICKNESS = 3.0
 DEFAULT_EDGE_STYLE = "solid"
 EDGE_STYLES = ("solid", "dashed", "dotted", "dashdot")
 
+# How an edge's path is drawn, independent of its line style (solid/dashed/
+# etc. above). "straight" is a direct line between the two endpoints (the
+# only option before this existed); "curved" bows the line off-axis so
+# parallel/nearby edges are visually distinguishable; "orthogonal" and
+# "polyline" route around any node box the direct line would otherwise cut
+# through (see widget.py's routing module) -- orthogonal restricts the
+# detour to horizontal/vertical segments, polyline allows a shorter
+# diagonal detour around just the obstacle's corner.
+DEFAULT_EDGE_ROUTING = "straight"
+EDGE_ROUTINGS = ("straight", "curved", "orthogonal", "polyline")
+
 
 class Edge:
-    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE):
+    def __init__(self, edge_id, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE, routing=DEFAULT_EDGE_ROUTING):
         self.id = edge_id
         self.src = src
         self.dst = dst
@@ -116,6 +127,7 @@ class Edge:
         self.arrow_start = arrow_start
         self.arrow_end = arrow_end
         self.style = style
+        self.routing = routing
 
     @property
     def directed(self) -> bool:
@@ -134,6 +146,7 @@ class Edge:
             "arrow_start": self.arrow_start,
             "arrow_end": self.arrow_end,
             "style": self.style,
+            "routing": self.routing,
         })
 
 
@@ -192,6 +205,10 @@ class VisibleEdge:
     @property
     def style(self):
         return self.edges[0].style if self.edges else DEFAULT_EDGE_STYLE
+
+    @property
+    def routing(self):
+        return self.edges[0].routing if self.edges else DEFAULT_EDGE_ROUTING
 
 
 @dataclass
@@ -288,8 +305,8 @@ class Canvas:
 
     # -- edges ---------------------------------------------------------
 
-    def add_edge(self, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE) -> Edge:
-        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
+    def add_edge(self, src: Node, dst: Node, color=None, thickness=DEFAULT_EDGE_THICKNESS, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE, routing=DEFAULT_EDGE_ROUTING) -> Edge:
+        edge = Edge(self._new_id(), src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style, routing=routing)
         self.edges[edge.id] = edge
         self._notify("edge_added")
         return edge
@@ -315,6 +332,10 @@ class Canvas:
 
     def set_edge_style(self, edge: Edge, style: str):
         edge.style = style
+        self._notify("edge_changed")
+
+    def set_edge_routing(self, edge: Edge, routing: str):
+        edge.routing = routing
         self._notify("edge_changed")
 
     def reverse_edge(self, edge: Edge):
@@ -545,6 +566,7 @@ class Canvas:
                 arrow_start=e.get("arrow_start", False),
                 arrow_end=e.get("arrow_end", e.get("directed", True)),
                 style=e.get("style", DEFAULT_EDGE_STYLE),
+                routing=e.get("routing", DEFAULT_EDGE_ROUTING),
             )
             canvas.edges[edge.id] = edge
             max_id = max(max_id, edge.id)

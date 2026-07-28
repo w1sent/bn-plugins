@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from .core.logging import get_logger
 from . import formats, persistence
+from . import routing as edge_routing
 from .layout import (
     NODE_HEIGHT as _NODE_HEIGHT,
     NODE_MAX_WIDTH as _NODE_MAX_WIDTH,
@@ -61,7 +62,7 @@ from .layout import (
     estimate_node_width,
     layout_new_nodes,
 )
-from .model import DEFAULT_EDGE_STYLE, EDGE_STYLES, Canvas, Group, Node
+from .model import DEFAULT_EDGE_ROUTING, DEFAULT_EDGE_STYLE, EDGE_ROUTINGS, EDGE_STYLES, Canvas, Group, Node
 
 logger = get_logger("node_canvas")
 
@@ -79,6 +80,7 @@ _NODE_LABEL_VMARGIN = 20.0  # top/bottom inset a NodeItem reserves around its la
 _GROUP_PADDING = 20
 _GROUP_LABEL_HEIGHT = 16
 _EDGE_STYLE_LABELS = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-Dot"}
+_EDGE_ROUTING_LABELS = {"straight": "Straight", "curved": "Curved", "orthogonal": "Orthogonal", "polyline": "Polyline"}
 _EDGE_QT_PEN_STYLES = {"solid": Qt.SolidLine, "dashed": Qt.DashLine, "dotted": Qt.DotLine, "dashdot": Qt.DashDotLine}
 
 # canvas identity -> open CanvasWidget, so api.export_image() can find a
@@ -463,13 +465,15 @@ class GroupBoxItem(QGraphicsRectItem):
 
 
 class EdgeItem(QGraphicsPathItem):
-    def __init__(self, src_item, dst_item, color=None, thickness=None, count=1, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE, edges=None):
+    def __init__(self, src_item, dst_item, canvas_widget: "CanvasWidget", color=None, thickness=None, count=1, arrow_start=False, arrow_end=True, style=DEFAULT_EDGE_STYLE, routing=DEFAULT_EDGE_ROUTING, edges=None):
         super().__init__()
         self.src_item = src_item
         self.dst_item = dst_item
+        self._canvas_widget = canvas_widget
         self.arrow_start = arrow_start
         self.arrow_end = arrow_end
         self.count = count
+        self.routing = routing
         self.edges = edges or []  # underlying model Edge(s) this item represents
         self.setZValue(0)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -511,6 +515,31 @@ class EdgeItem(QGraphicsPathItem):
         rect = item.sceneBoundingRect() if hasattr(item, "sceneBoundingRect") else QRectF(other_center, other_center)
         return self._clip_to_rect(other_center, rect)
 
+    def _obstacle_rects(self) -> list[tuple[float, float, float, float]]:
+        """Every OTHER currently-visible node/group box (never this edge's
+        own src/dst) as a plain (x, y, w, h) tuple -- what orthogonal/
+        polyline routing dodges."""
+        cw = self._canvas_widget
+        if cw is None:
+            return []
+        obstacles = []
+        for item in list(cw._node_items.values()) + list(cw._group_items.values()):
+            if item is self.src_item or item is self.dst_item:
+                continue
+            r = item.sceneBoundingRect()
+            obstacles.append((r.x(), r.y(), r.width(), r.height()))
+        return obstacles
+
+    def _curve_control_point(self, p1: QPointF, p2: QPointF) -> QPointF:
+        dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
+        length = math.hypot(dx, dy)
+        mx, my = (p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2
+        if length == 0:
+            return QPointF(mx, my)
+        nx, ny = -dy / length, dx / length  # unit normal, consistently to one side
+        bow = min(60.0, length * 0.2)
+        return QPointF(mx + nx * bow, my + ny * bow)
+
     def update_path(self):
         c1 = self._center(self.src_item)
         c2 = self._center(self.dst_item)
@@ -518,17 +547,36 @@ class EdgeItem(QGraphicsPathItem):
         p2c = self._endpoint(self.dst_item, c1)
 
         path = QPainterPath(p1c)
-        path.lineTo(p2c)
-        angle = math.atan2(p2c.y() - p1c.y(), p2c.x() - p1c.x())
+        if self.routing == "curved":
+            ctrl = self._curve_control_point(p1c, p2c)
+            path.quadTo(ctrl, p2c)
+            start_tangent = (ctrl.x() - p1c.x(), ctrl.y() - p1c.y())
+            end_tangent = (p2c.x() - ctrl.x(), p2c.y() - ctrl.y())
+        elif self.routing in ("orthogonal", "polyline"):
+            obstacles = self._obstacle_rects()
+            src_pt, dst_pt = (p1c.x(), p1c.y()), (p2c.x(), p2c.y())
+            route = edge_routing.orthogonal_path if self.routing == "orthogonal" else edge_routing.polyline_path
+            waypoints = route(src_pt, dst_pt, obstacles)
+            for wx, wy in waypoints[1:]:
+                path.lineTo(wx, wy)
+            start_tangent = (waypoints[1][0] - waypoints[0][0], waypoints[1][1] - waypoints[0][1])
+            end_tangent = (waypoints[-1][0] - waypoints[-2][0], waypoints[-1][1] - waypoints[-2][1])
+        else:  # "straight"
+            path.lineTo(p2c)
+            start_tangent = (p2c.x() - p1c.x(), p2c.y() - p1c.y())
+            end_tangent = start_tangent
+
+        end_angle = math.atan2(end_tangent[1], end_tangent[0])
+        start_angle = math.atan2(-start_tangent[1], -start_tangent[0])
+
         if self.arrow_end:
             for sign in (-1, 1):
-                wing_angle = angle + sign * math.radians(28)
+                wing_angle = end_angle + sign * math.radians(28)
                 path.moveTo(p2c)
                 path.lineTo(p2c - QPointF(math.cos(wing_angle), math.sin(wing_angle)) * _ARROW_SIZE)
         if self.arrow_start:
-            back_angle = angle + math.pi
             for sign in (-1, 1):
-                wing_angle = back_angle + sign * math.radians(28)
+                wing_angle = start_angle + sign * math.radians(28)
                 path.moveTo(p1c)
                 path.lineTo(p1c - QPointF(math.cos(wing_angle), math.sin(wing_angle)) * _ARROW_SIZE)
         self.setPath(path)
@@ -689,10 +737,10 @@ class CanvasWidget(QGraphicsView):
             if src_item is None or dst_item is None:
                 continue
             edge_item = EdgeItem(
-                src_item, dst_item,
+                src_item, dst_item, self,
                 color=vedge.color, thickness=vedge.thickness, count=vedge.count,
                 arrow_start=vedge.arrow_start, arrow_end=vedge.arrow_end,
-                style=vedge.style, edges=vedge.edges,
+                style=vedge.style, routing=vedge.routing, edges=vedge.edges,
             )
             self._scene.addItem(edge_item)
             self._edge_items[id(vedge)] = edge_item
@@ -812,6 +860,12 @@ class CanvasWidget(QGraphicsView):
             return
         for edge_item in self._edge_items.values():
             if edge_item.src_item is node_item or edge_item.dst_item is node_item:
+                edge_item.update_path()
+            elif edge_item.routing in ("orthogonal", "polyline"):
+                # `node` isn't one of this edge's own endpoints, but an
+                # obstacle-avoiding edge's route can depend on ANY node's
+                # position -- it may have just become (or stopped being)
+                # an obstacle in this edge's path.
                 edge_item.update_path()
 
     # -- navigation / toast ---------------------------------------------
@@ -1110,10 +1164,12 @@ class CanvasWidget(QGraphicsView):
             # edit the others individually.
             logger.debug("editing 1 of %d aggregated edges", len(edge_item.edges))
         style_choices = [_EDGE_STYLE_LABELS[s] for s in EDGE_STYLES]
+        routing_choices = [_EDGE_ROUTING_LABELS[r] for r in EDGE_ROUTINGS]
         values = FormDialog.get(self, "Edit Edge", [
             _field("color", "Color (blank = default)", "color", default=edge.color or ""),
             _field("thickness", "Thickness", "float", edge.thickness, range=(0.5, 20.0)),
             _field("style", "Style", "choice", _EDGE_STYLE_LABELS[edge.style], choices=style_choices),
+            _field("routing", "Routing", "choice", _EDGE_ROUTING_LABELS[edge.routing], choices=routing_choices),
             _field("arrow_start", "Arrow at start (src)", "checkbox", edge.arrow_start),
             _field("arrow_end", "Arrow at end (dst)", "checkbox", edge.arrow_end),
             _field("reverse", "Swap direction (src <-> dst)", "checkbox", False),
@@ -1124,6 +1180,8 @@ class CanvasWidget(QGraphicsView):
         self.canvas.set_edge_thickness(edge, values["thickness"])
         style_by_label = {v: k for k, v in _EDGE_STYLE_LABELS.items()}
         self.canvas.set_edge_style(edge, style_by_label.get(values["style"], DEFAULT_EDGE_STYLE))
+        routing_by_label = {v: k for k, v in _EDGE_ROUTING_LABELS.items()}
+        self.canvas.set_edge_routing(edge, routing_by_label.get(values["routing"], DEFAULT_EDGE_ROUTING))
         self.canvas.set_edge_arrows(edge, arrow_start=values["arrow_start"], arrow_end=values["arrow_end"])
         if values["reverse"]:
             self.canvas.reverse_edge(edge)

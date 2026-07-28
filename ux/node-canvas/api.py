@@ -18,7 +18,7 @@ from typing import Optional
 from .core.logging import get_logger
 from . import formats, persistence
 from .layout import layout_new_nodes
-from .model import DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, Canvas, Edge, Group, Node
+from .model import DEFAULT_EDGE_ROUTING, DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, Canvas, Edge, Group, Node
 
 logger = get_logger("node_canvas")
 
@@ -73,8 +73,8 @@ def set_node_label(canvas: Canvas, node: Node, label: str):
     canvas.set_node_label(node, label)
 
 
-def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = DEFAULT_EDGE_THICKNESS, arrow_start: bool = False, arrow_end: bool = True, style: str = DEFAULT_EDGE_STYLE) -> Edge:
-    return canvas.add_edge(src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style)
+def add_edge(canvas: Canvas, src: Node, dst: Node, color: Optional[str] = None, thickness: float = DEFAULT_EDGE_THICKNESS, arrow_start: bool = False, arrow_end: bool = True, style: str = DEFAULT_EDGE_STYLE, routing: str = DEFAULT_EDGE_ROUTING) -> Edge:
+    return canvas.add_edge(src, dst, color=color, thickness=thickness, arrow_start=arrow_start, arrow_end=arrow_end, style=style, routing=routing)
 
 
 def remove_edge(canvas: Canvas, edge: Edge):
@@ -95,6 +95,10 @@ def set_edge_arrows(canvas: Canvas, edge: Edge, arrow_start: Optional[bool] = No
 
 def set_edge_style(canvas: Canvas, edge: Edge, style: str):
     canvas.set_edge_style(edge, style)
+
+
+def set_edge_routing(canvas: Canvas, edge: Edge, routing: str):
+    canvas.set_edge_routing(edge, routing)
 
 
 def reverse_edge(canvas: Canvas, edge: Edge):
