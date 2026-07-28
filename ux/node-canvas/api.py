@@ -3,7 +3,14 @@ so it works from BN's execute_script (see CONTEXT.md's "Developing and
 testing plugins" section) with no widget open. widget.py observes any
 Canvas mutated here and re-renders live if a view happens to be open.
 
-    from node_canvas import api
+BN loads this plugin's directory name ("node-canvas", with the hyphen) as
+its module name, which isn't a valid `import` statement target -- reach it
+via importlib instead (see skills/node-canvas/SKILL.md for the full guide,
+including how this plugin's own PluginCommand handlers wire into whatever
+canvas the sidebar panel currently has open):
+
+    import importlib
+    api = importlib.import_module("node-canvas.api")
     canvas = api.create_canvas(bv, "malware-chain")
     api.add_callees(bv, canvas, bv.entry_point, depth=2)
     api.export_json(canvas, "/tmp/chain.json")
@@ -289,6 +296,7 @@ def _merge_into(dest: Canvas, src: Canvas) -> list[Node]:
             node_map[edge.src.id], node_map[edge.dst.id],
             color=edge.color, thickness=edge.thickness,
             arrow_start=edge.arrow_start, arrow_end=edge.arrow_end, style=edge.style,
+            routing=edge.routing,
         )
 
     return new_nodes
