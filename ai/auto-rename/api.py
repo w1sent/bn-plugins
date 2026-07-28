@@ -15,8 +15,8 @@ from .core.logging import get_logger
 from .core.exceptions import AIConfigError, AITimeoutError
 from .core import llm_debug
 
-from . import ordering as ordering_mod
-from .ordering import OrderingError
+from .core import graph as ordering_mod
+from .core.graph import OrderingError
 
 _plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("auto_rename")
@@ -745,9 +745,9 @@ def rename_functions(
 
     `anchor` is required when `options.ordering` (or the
     `auto_rename.ordering` setting) is one of the local-* strategies; see
-    `ordering.NEEDS_ANCHOR`. `restrict_to`, if given, confines local-*
+    `core.graph.NEEDS_ANCHOR`. `restrict_to`, if given, confines local-*
     graph traversal to that set of functions (e.g. a UI selection).
-    Raises `ordering.OrderingError` if a required input is missing.
+    Raises `core.graph.OrderingError` if a required input is missing.
     """
     funcs = list(funcs)
 
@@ -930,9 +930,9 @@ rename_filtered_variables(bv, pattern, *, provider=None, options=None, restrict_
 
 Scheduling:
     `options.ordering` picks which function is renamed next (see
-    `ordering.ORDERINGS`): default, leaves-first, top-down, local-breadth,
+    `core.graph.ORDERINGS`): default, leaves-first, top-down, local-breadth,
     local-bottom-up, local-up, export-down, info-gain. `local-*` orderings
-    require `anchor` (raises `ordering.OrderingError` if missing).
+    require `anchor` (raises `core.graph.OrderingError` if missing).
     `restrict_to`, if given, confines local-* traversal to that set of
     functions (e.g. a UI selection); unreachable members sort last.
 

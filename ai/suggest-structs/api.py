@@ -14,6 +14,7 @@ from .core.retry import retry_with_backoff
 from .core.logging import get_logger
 from .core.exceptions import AIConfigError, AITimeoutError
 from .core import llm_debug
+from .core import graph
 
 _plugin_dir = Path(__file__).parent.resolve()
 logger = get_logger("suggest_structs")
@@ -736,6 +737,26 @@ def _candidate_vars(bv, threshold):
     return candidates
 
 
+def _candidate_vars_scoped(bv, anchor, threshold, *, direction="callees", depth=1):
+    """Like `_candidate_vars`, but confined to `anchor` and its local
+    neighborhood (see docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md)
+    instead of sweeping the whole binary. Global data vars are excluded --
+    they aren't scoped to any particular function's neighborhood."""
+    scope = [anchor] + graph.neighborhood(anchor, list(bv.functions), direction=direction, depth=depth)
+
+    candidates = []
+    for func in scope:
+        if not func.hlil:
+            continue
+        for var in func.hlil.vars:
+            if not _is_pointer_var(var):
+                continue
+            if not _is_still_default(bv, func, var, threshold):
+                continue
+            candidates.append((func.start, var.name))
+    return candidates
+
+
 def _suggest_batch_item(bv, addr, var_name, *, provider, options, tag_type_name):
     """Dispatch one batch candidate to the right trigger and apply the
     result directly (batch mode has no preview step). `var_name` is set
@@ -833,6 +854,27 @@ def suggest_all(
     )
 
 
+def suggest_scoped(
+    bv, anchor, *, direction="callees", depth=1, provider=None, mode=None, options=None,
+    progress=None, cancel=None, async_run=False, on_complete=None,
+    tag_type_name=None,
+):
+    """Sweep candidate pointer variables confined to `anchor` and its local
+    neighborhood instead of the whole binary -- see the "scoped AI tool
+    runs" TODO / docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md.
+    `direction`/`depth` default to direct callees only (1-hop), the
+    cheapest/most predictable scope."""
+    if options is None:
+        options = StructOptions()
+    threshold, _max_steps, _max_structs = _resolve_bn_settings(bv, options)
+    addrs = _candidate_vars_scoped(bv, anchor, threshold, direction=direction, depth=depth)
+    return suggest_structs(
+        bv, addrs, provider=provider, options=options,
+        progress=progress, cancel=cancel, async_run=async_run,
+        on_complete=on_complete, tag_type_name=tag_type_name,
+    )
+
+
 def help():
     print("""suggest-structs API
 --------------------
@@ -856,6 +898,11 @@ suggest_structs(bv, addrs, *, provider=None, mode=None, options=None,
 suggest_all(bv, *, provider=None, mode=None, options=None,
             progress=None, cancel=None) -> list[StructResult]
     Batch-sweep every candidate pointer variable / untyped global (trigger 3).
+
+suggest_scoped(bv, anchor, *, direction="callees", depth=1, provider=None, mode=None,
+                options=None, progress=None, cancel=None) -> list[StructResult]
+    Like suggest_all(), but confined to `anchor` and its local neighborhood
+    (direct callees by default) instead of the whole binary.
 
 Types:
     StructResult(address: int, var_name: str | None, struct_name: str | None,

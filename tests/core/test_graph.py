@@ -1,22 +1,17 @@
-"""Unit + fuzz tests for ordering.py.
+"""Unit + fuzz tests for core/graph.py.
 
-Runs outside Binary Ninja: `ordering.py` is duck-typed, so a minimal fake
+Runs outside Binary Ninja: `graph.py` is duck-typed, so a minimal fake
 function object (start/name/callers/callees) stands in for
-`binaryninja.function.Function`. See ai/auto-rename/tests/run.py for the
-BN integration test against real binaries (per ADR 0009); it requires
-`testcases/` infrastructure this repo doesn't have yet for any plugin.
+`binaryninja.function.Function`.
 """
 
 import random
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from ordering import (  # noqa: E402
+from core.graph import (
     OrderingError,
+    neighborhood,
     order_functions,
     zero_caller_roots,
 )
@@ -238,6 +233,78 @@ def test_zero_caller_roots():
     leaf = FakeFunc("leaf", 0x200)
     link(root, leaf)
     assert zero_caller_roots([root, leaf]) == [root]
+
+
+def test_neighborhood_default_is_direct_callees_only():
+    anchor = FakeFunc("anchor", 0x100)
+    direct = FakeFunc("direct", 0x200)
+    indirect = FakeFunc("indirect", 0x300)
+    link(anchor, direct)
+    link(direct, indirect)
+    universe = [anchor, direct, indirect]
+
+    result = neighborhood(anchor, universe)
+    assert names(result) == ["direct"]
+
+
+def test_neighborhood_excludes_anchor_even_if_in_universe():
+    anchor = FakeFunc("anchor", 0x100)
+    link(anchor, anchor)  # self-loop
+    result = neighborhood(anchor, [anchor])
+    assert result == []
+
+
+def test_neighborhood_depth_expands_hops():
+    anchor = FakeFunc("anchor", 0x100)
+    direct = FakeFunc("direct", 0x200)
+    indirect = FakeFunc("indirect", 0x300)
+    link(anchor, direct)
+    link(direct, indirect)
+    universe = [anchor, direct, indirect]
+
+    result = neighborhood(anchor, universe, depth=2)
+    assert names(result) == ["direct", "indirect"]
+
+
+def test_neighborhood_direction_callers():
+    anchor = FakeFunc("anchor", 0x100)
+    caller = FakeFunc("caller", 0x200)
+    callee = FakeFunc("callee", 0x300)
+    link(caller, anchor)
+    link(anchor, callee)
+    universe = [anchor, caller, callee]
+
+    result = neighborhood(anchor, universe, direction="callers")
+    assert names(result) == ["caller"]
+
+
+def test_neighborhood_direction_both():
+    anchor = FakeFunc("anchor", 0x100)
+    caller = FakeFunc("caller", 0x200)
+    callee = FakeFunc("callee", 0x300)
+    link(caller, anchor)
+    link(anchor, callee)
+    universe = [anchor, caller, callee]
+
+    result = neighborhood(anchor, universe, direction="both")
+    assert sorted(names(result)) == ["callee", "caller"]
+
+
+def test_neighborhood_confined_to_universe():
+    anchor = FakeFunc("anchor", 0x100)
+    inside = FakeFunc("inside", 0x200)
+    outside = FakeFunc("outside", 0x300)
+    link(anchor, inside)
+    link(anchor, outside)
+
+    result = neighborhood(anchor, [anchor, inside], depth=5)
+    assert names(result) == ["inside"]
+
+
+def test_neighborhood_unknown_direction_raises():
+    anchor = FakeFunc("anchor", 0x100)
+    with pytest.raises(ValueError):
+        neighborhood(anchor, [anchor], direction="sideways")
 
 
 # --- Fuzz testing -----------------------------------------------------------

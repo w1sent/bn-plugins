@@ -1,4 +1,9 @@
-"""Scheduling-order strategies for bulk rename operations.
+"""Call-graph traversal and scheduling-order primitives, shared across AI
+plugins -- see docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md.
+
+Originally built for auto-rename's bulk-rename scheduling, then extracted
+here so any plugin (auto-rename, suggest-structs, ...) can reuse the same
+local-neighborhood traversal for scoped runs instead of reimplementing it.
 
 Every function here is duck-typed against a minimal function-like interface:
 ``.start`` (int), ``.name`` (str), ``.callers`` (iterable of function-like),
@@ -9,7 +14,7 @@ plain Python fakes outside Binary Ninja.
 
 BN-specific concepts (the entry function, exported symbols) are resolved by
 the caller into plain ``roots`` lists before reaching this module -- see
-``api._resolve_roots``.
+``ai/auto-rename/api.py``'s ``_resolve_roots``.
 """
 
 from __future__ import annotations
@@ -50,6 +55,52 @@ class OrderingError(ValueError):
 def zero_caller_roots(universe: Sequence["Function"]) -> List["Function"]:
     """Fallback root set: functions in `universe` with no callers."""
     return [f for f in universe if not list(f.callers)]
+
+
+def neighborhood(
+    anchor: "Function",
+    universe: Iterable["Function"],
+    *,
+    direction: str = "callees",
+    depth: int = 1,
+) -> List["Function"]:
+    """Return the functions in `universe` reachable from `anchor` within
+    `depth` hops -- the "scope to here" primitive behind scoped AI tool
+    runs (see docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md).
+    `anchor` itself is excluded even if present in `universe`.
+
+    `direction` is `"callees"` (default), `"callers"`, or `"both"`.
+    """
+    if direction == "callees":
+        neighbor_fns: List[Callable[["Function"], Iterable["Function"]]] = [lambda f: f.callees]
+    elif direction == "callers":
+        neighbor_fns = [lambda f: f.callers]
+    elif direction == "both":
+        neighbor_fns = [lambda f: f.callees, lambda f: f.callers]
+    else:
+        raise ValueError(f"unknown direction '{direction}'")
+
+    universe_addrs = {f.start for f in universe}
+    by_addr = {f.start: f for f in universe}
+
+    found: List["Function"] = []
+    seen = {anchor.start}
+    queue = deque([(anchor, 0)])
+
+    while queue:
+        cur, cur_depth = queue.popleft()
+        if cur_depth >= depth:
+            continue
+        for neighbor_fn in neighbor_fns:
+            for nb in neighbor_fn(cur):
+                if nb.start in seen:
+                    continue
+                seen.add(nb.start)
+                if nb.start in universe_addrs:
+                    found.append(by_addr[nb.start])
+                    queue.append((nb, cur_depth + 1))
+
+    return found
 
 
 def order_functions(

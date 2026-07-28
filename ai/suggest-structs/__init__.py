@@ -7,7 +7,12 @@ if _deps.is_dir() and str(_deps) not in sys.path:
     sys.path.insert(0, str(_deps))
 
 from binaryninja import PluginCommand
-from binaryninja.interaction import MultilineTextField, get_form_input
+from binaryninja.interaction import (
+    MultilineTextField,
+    get_choice_input,
+    get_form_input,
+    get_int_input,
+)
 from binaryninja.mainthread import execute_on_main_thread
 from .core.logging import get_logger
 from .core.settings import register_setting
@@ -167,6 +172,47 @@ def _suggest_all(bv, addr):
     api.suggest_all(bv, async_run=True, on_complete=on_complete, tag_type_name=tag_type)
 
 
+def _suggest_neighborhood(bv, func):
+    """Scope a batch sweep to `func`'s direct callees (1-hop) -- see the
+    "scoped AI tool runs" TODO / docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md."""
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+
+    def on_complete(results):
+        bv.commit_undo_actions()
+        _apply_results(bv, results, tag_type)
+
+    bv.begin_undo_actions()
+    api.suggest_scoped(bv, func, async_run=True, on_complete=on_complete, tag_type_name=tag_type)
+
+
+_NEIGHBORHOOD_DIRECTIONS = ("callees", "callers", "both")
+
+
+def _suggest_neighborhood_choose_scope(bv, func):
+    direction_idx = get_choice_input(
+        "Direction:", "Suggest Structs (Local Neighborhood)", list(_NEIGHBORHOOD_DIRECTIONS)
+    )
+    if direction_idx is None:
+        return
+    direction = _NEIGHBORHOOD_DIRECTIONS[direction_idx]
+
+    depth = get_int_input("Depth (hops from this function):", "Suggest Structs (Local Neighborhood)")
+    if depth is None:
+        return
+
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+
+    def on_complete(results):
+        bv.commit_undo_actions()
+        _apply_results(bv, results, tag_type)
+
+    bv.begin_undo_actions()
+    api.suggest_scoped(
+        bv, func, direction=direction, depth=depth,
+        async_run=True, on_complete=on_complete, tag_type_name=tag_type,
+    )
+
+
 def _is_valid_pointer_var(bv, addr):
     _func, var = _hlil_var_at(bv, addr)
     return var is not None
@@ -174,6 +220,10 @@ def _is_valid_pointer_var(bv, addr):
 
 def _is_valid_selection(bv, addr, length):
     return length > 0
+
+
+def _is_valid_func(bv, func):
+    return func is not None
 
 
 register_setting(
@@ -228,6 +278,19 @@ PluginCommand.register_for_address(
     "Suggest Structs\\Suggest Struct (Batch)",
     "Suggest structs for all candidate pointer variables and untyped globals using AI",
     _suggest_all,
+)
+PluginCommand.register_for_function(
+    "Suggest Structs\\Suggest Struct (Local Neighborhood)",
+    "Suggest structs for candidate pointer variables in this function's direct callees using AI",
+    _suggest_neighborhood,
+    _is_valid_func,
+)
+PluginCommand.register_for_function(
+    "Suggest Structs\\Suggest Struct (Local Neighborhood, Choose Scope)",
+    "Suggest structs for candidate pointer variables in this function's neighborhood using AI, "
+    "picking direction/depth for this run only",
+    _suggest_neighborhood_choose_scope,
+    _is_valid_func,
 )
 
 try:

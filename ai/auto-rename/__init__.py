@@ -15,7 +15,8 @@ from .core.tags import create_tag_type, tag_item
 from .core.ai_config import load_ai_config, resolve_provider
 
 from . import api
-from .ordering import ORDERINGS, OrderingError
+from .core import graph
+from .core.graph import ORDERINGS, OrderingError
 
 logger = get_logger("auto_rename")
 
@@ -150,6 +151,40 @@ def _rename_filtered(bv, addr):
     tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
     _run_rename_batch(
         bv, funcs, tag_type, "Renaming filtered functions", anchor=_function_at(bv, addr)
+    )
+
+
+def _rename_neighborhood(bv, func):
+    """Scope a run to `func`'s direct callees (1-hop) -- see the
+    "scoped AI tool runs" TODO / docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md.
+    Cheapest, most predictable default; use the "Choose Scope" variant for
+    a wider/narrower neighborhood."""
+    funcs = [func] + graph.neighborhood(func, list(bv.functions), direction="callees", depth=1)
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+    _run_rename_batch(
+        bv, funcs, tag_type, "Renaming local neighborhood", anchor=func, restrict_to=funcs
+    )
+
+
+_NEIGHBORHOOD_DIRECTIONS = ("callees", "callers", "both")
+
+
+def _rename_neighborhood_choose_scope(bv, func):
+    direction_idx = get_choice_input(
+        "Direction:", "Auto Rename (Local Neighborhood)", list(_NEIGHBORHOOD_DIRECTIONS)
+    )
+    if direction_idx is None:
+        return
+    direction = _NEIGHBORHOOD_DIRECTIONS[direction_idx]
+
+    depth = get_int_input("Depth (hops from this function):", "Auto Rename (Local Neighborhood)")
+    if depth is None:
+        return
+
+    funcs = [func] + graph.neighborhood(func, list(bv.functions), direction=direction, depth=depth)
+    tag_type = create_tag_type(bv, _TAG_TYPE_NAME, icon="")
+    _run_rename_batch(
+        bv, funcs, tag_type, "Renaming local neighborhood", anchor=func, restrict_to=funcs
     )
 
 
@@ -354,6 +389,18 @@ PluginCommand.register_for_range(
     "Rename selected functions using AI",
     _rename_selection,
     _is_valid_selection,
+)
+PluginCommand.register_for_function(
+    "Auto Rename\\Auto Rename (Local Neighborhood)",
+    "Rename this function's direct callees using AI",
+    _rename_neighborhood,
+    _is_valid_func,
+)
+PluginCommand.register_for_function(
+    "Auto Rename\\Auto Rename (Local Neighborhood, Choose Scope)",
+    "Rename this function's neighborhood using AI, picking direction/depth for this run only",
+    _rename_neighborhood_choose_scope,
+    _is_valid_func,
 )
 PluginCommand.register_for_address(
     "Auto Rename\\Auto Rename All", "Rename all auto-named functions using AI", _rename_all
