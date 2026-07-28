@@ -120,7 +120,7 @@ def _add_memory_location_to_canvas(bv, addr, length):
             else:
                 label = f"{addr:#x}: {data.hex()}{truncated} [{addr:#x}-{end:#x}]"
 
-        api.add_node(canvas_widget.canvas, label, address=addr)
+        api.add_node(canvas_widget.canvas, label, address=addr, pinned_label=True)
         logger.info("canvas %r: added memory location %r via PluginCommand", canvas_widget.canvas.name, label)
 
     _run_on_main_thread(do)

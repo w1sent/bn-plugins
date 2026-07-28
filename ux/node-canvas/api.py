@@ -53,8 +53,8 @@ def delete_canvas(bv, name: str):
 # -- nodes/edges ------------------------------------------------------
 
 
-def add_node(canvas: Canvas, label: str, address: Optional[int] = None, color: Optional[str] = None) -> Node:
-    return canvas.add_node(label, address=address, color=color)
+def add_node(canvas: Canvas, label: str, address: Optional[int] = None, color: Optional[str] = None, pinned_label: bool = False) -> Node:
+    return canvas.add_node(label, address=address, color=color, pinned_label=pinned_label)
 
 
 def remove_node(canvas: Canvas, node: Node):
@@ -276,7 +276,7 @@ def _merge_into(dest: Canvas, src: Canvas) -> list[Node]:
     new_nodes: list[Node] = []
     node_map: dict[int, Node] = {}
     for node in src.nodes.values():
-        new_node = dest.add_node(node.label, address=node.address, color=node.color, x=node.x, y=node.y)
+        new_node = dest.add_node(node.label, address=node.address, color=node.color, x=node.x, y=node.y, pinned_label=node.pinned_label)
         if node.group is not None:
             new_group = clone_group(node.group)
             new_node.group = new_group

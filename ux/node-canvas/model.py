@@ -52,7 +52,7 @@ def _resolve_address(bv, address):
 
 
 class Node:
-    def __init__(self, node_id, label, address=None, color=None, border_color=None, x=0.0, y=0.0):
+    def __init__(self, node_id, label, address=None, color=None, border_color=None, x=0.0, y=0.0, pinned_label=False):
         self.id = node_id
         self.label = label
         self.address = address
@@ -61,12 +61,20 @@ class Node:
         self.x = x
         self.y = y
         self.group: Optional["Group"] = None
+        # True for nodes whose `label` was deliberately hand-crafted at
+        # creation time (e.g. "Add Memory Location"'s hex/string preview)
+        # and must survive as-is rather than being replaced by whatever
+        # live-resolves at `address` -- most addresses (function/data var/
+        # symbol) don't resolve to anything meaningful at an arbitrary
+        # memory location, so live resolution would silently discard the
+        # preview text the node was created to show.
+        self.pinned_label = pinned_label
 
     def display_label(self, bv) -> str:
         """Resolved label with no icon/marker baked in -- that's a
         rendering concern the widget owns (see widget.py's NodeItem),
         so this stays a plain string usable for export formats too."""
-        if self.address is None:
+        if self.address is None or self.pinned_label:
             return self.label
         _, label = _resolve_address(bv, self.address)
         if label is None:
@@ -83,7 +91,10 @@ class Node:
         return kind
 
     def is_unresolved(self, bv) -> bool:
-        if self.address is None:
+        """False for pinned-label nodes -- their address is an arbitrary
+        memory location by design, not something expected to resolve to a
+        function/data var/symbol, so it shouldn't be flagged as stale."""
+        if self.address is None or self.pinned_label:
             return False
         kind, _ = _resolve_address(bv, self.address)
         return kind is None
@@ -98,6 +109,7 @@ class Node:
             "x": self.x,
             "y": self.y,
             "group": self.group.id if self.group else None,
+            "pinned_label": self.pinned_label,
         })
 
 
@@ -270,8 +282,8 @@ class Canvas:
 
     # -- nodes -------------------------------------------------------------
 
-    def add_node(self, label, address=None, color=None, x=0.0, y=0.0) -> Node:
-        node = Node(self._new_id(), label, address=address, color=color, x=x, y=y)
+    def add_node(self, label, address=None, color=None, x=0.0, y=0.0, pinned_label=False) -> Node:
+        node = Node(self._new_id(), label, address=address, color=color, x=x, y=y, pinned_label=pinned_label)
         self.nodes[node.id] = node
         logger.debug("canvas %r: added node %r (id=%d, address=%s)", self.name, label, node.id, hex(address) if address is not None else None)
         self._notify("node_added")
@@ -526,6 +538,7 @@ class Canvas:
                 border_color=n.get("border_color"),
                 x=n.get("x", 0.0),
                 y=n.get("y", 0.0),
+                pinned_label=n.get("pinned_label", False),
             )
             canvas.nodes[node.id] = node
             node_by_id[node.id] = node

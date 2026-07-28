@@ -117,6 +117,8 @@ def export_dot(canvas: Canvas, path: str):
             attrs.append(f'color="{_dot_escape(node.color)}"')
         if node.address is not None:
             attrs.append(f'address="{node.address:#x}"')
+        if node.pinned_label:
+            attrs.append('pinned_label="true"')
         attrs.append(f"pos=\"{node.x / 100.0},{node.y / 100.0}!\"")
         return "[" + ", ".join(attrs) + "]"
 
@@ -327,11 +329,14 @@ def import_dot(path: str, name: str | None = None) -> Canvas:
             except ValueError:
                 pass
 
+        pinned_label = attrs.get("pinned_label", "").lower() == "true"
+
         if node_name in node_by_dot_name:
             node = node_by_dot_name[node_name]
             node.label = label
+            node.pinned_label = pinned_label
         else:
-            node = canvas.add_node(label, address=address, color=color, x=x, y=y)
+            node = canvas.add_node(label, address=address, color=color, x=x, y=y, pinned_label=pinned_label)
             node_by_dot_name[node_name] = node
 
         current_group = scope_stack[-1].group

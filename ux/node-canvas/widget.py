@@ -74,6 +74,7 @@ _NODE_ICONS = {
     "symbol": "●",  # ● -- resolved to some other symbol (import, export, ...)
 }
 _UNRESOLVED_ICON = "⚠"  # ⚠ -- marks an address that no longer resolves
+_PINNED_ICON = "▤"  # ▤ -- marks a pinned-label memory location with no BN-entity kind
 _ARROW_SIZE = 9
 _NODE_LABEL_MARGIN = 24.0  # left/right inset a NodeItem reserves around its label text
 _NODE_LABEL_VMARGIN = 20.0  # top/bottom inset a NodeItem reserves around its label text
@@ -330,6 +331,12 @@ class NodeItem(QGraphicsRectItem):
         unresolved = False
         if self.node.address is None:
             label = self.node.label
+        elif self.node.pinned_label:
+            # Pinned label: never overridden by live resolution, and never
+            # flagged unresolved -- an arbitrary memory location is not
+            # expected to resolve to a function/data var/symbol anyway.
+            icon = _NODE_ICONS.get(self.node.resolve_kind(bv), _PINNED_ICON) if bv is not None else _PINNED_ICON
+            label = f"{icon} {self.node.label}"
         elif bv is None:
             label = self.node.label
         else:
@@ -1092,7 +1099,7 @@ class CanvasWidget(QGraphicsView):
         if representation != "Address only" and length > 0:
             body = self._memory_preview_text(addr, length, representation)
             label = f"{addr:#x}: {body} [{addr:#x}-{addr + length:#x}]"
-        self.canvas.add_node(label, address=addr)
+        self.canvas.add_node(label, address=addr, pinned_label=True)
 
     def _action_remove(self, nodes):
         for node in nodes:
