@@ -62,7 +62,7 @@ from .layout import (
     estimate_node_width,
     layout_new_nodes,
 )
-from .model import DEFAULT_EDGE_ROUTING, DEFAULT_EDGE_STYLE, EDGE_ROUTINGS, EDGE_STYLES, Canvas, Group, Node
+from .model import DEFAULT_EDGE_ROUTING, DEFAULT_EDGE_STYLE, DEFAULT_EDGE_THICKNESS, EDGE_ROUTINGS, EDGE_STYLES, Canvas, Group, Node
 
 logger = get_logger("node_canvas")
 
@@ -82,6 +82,7 @@ _GROUP_PADDING = 20
 _GROUP_LABEL_HEIGHT = 16
 _EDGE_STYLE_LABELS = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-Dot"}
 _EDGE_ROUTING_LABELS = {"straight": "Straight", "curved": "Curved", "orthogonal": "Orthogonal", "polyline": "Polyline"}
+_MIXED_CHOICE = "(mixed)"  # placeholder choice shown for a bulk-edit "choice" field the selection disagrees on
 _EDGE_QT_PEN_STYLES = {"solid": Qt.SolidLine, "dashed": Qt.DashLine, "dotted": Qt.DotLine, "dashdot": Qt.DashDotLine}
 
 # canvas identity -> open CanvasWidget, so api.export_image() can find a
@@ -138,13 +139,20 @@ class FormDialog(QDialog):
     non-preview field's value changes (including once up front, to seed
     the initial preview) -- it should call `dialog.set_preview(key, text)`
     for whichever "preview" fields it wants to update. Used by e.g. Add
-    Memory Location's live hex/string preview."""
+    Memory Location's live hex/string preview.
 
-    def __init__(self, parent, title: str, fields: list[dict], on_change=None):
+    `track_dirty`, if set, records which fields the user actually touched
+    (vs. ones left at their seeded default) -- see `changed_values()`,
+    used by the bulk-edit actions so untouched fields don't overwrite
+    values that differ across the selection."""
+
+    def __init__(self, parent, title: str, fields: list[dict], on_change=None, track_dirty=False):
         super().__init__(parent)
         self.setWindowTitle(title)
         self._widgets = {}
         self._on_change = on_change
+        self._track_dirty = track_dirty
+        self._dirty: set[str] = set()
 
         form = QFormLayout()
         for spec in fields:
@@ -185,7 +193,9 @@ class FormDialog(QDialog):
             self._widgets[spec["key"]] = w
             form.addRow(spec["label"], row_widget if row_widget is not None else w)
             if kind != "preview" and on_change is not None:
-                self._watch(w)
+                self._connect_change(w, lambda: self._on_change(self))
+            if kind != "preview" and track_dirty:
+                self._connect_change(w, lambda key=spec["key"]: self._dirty.add(key))
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -220,17 +230,17 @@ class FormDialog(QDialog):
         row_layout.addWidget(button)
         return row
 
-    def _watch(self, w):
+    def _connect_change(self, w, handler):
         if isinstance(w, QComboBox):
-            w.currentTextChanged.connect(lambda _: self._on_change(self))
+            w.currentTextChanged.connect(lambda _: handler())
         elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
-            w.valueChanged.connect(lambda _: self._on_change(self))
+            w.valueChanged.connect(lambda _: handler())
         elif isinstance(w, QCheckBox):
-            w.toggled.connect(lambda _: self._on_change(self))
+            w.toggled.connect(lambda _: handler())
         elif isinstance(w, QPlainTextEdit):
-            w.textChanged.connect(lambda: self._on_change(self))
+            w.textChanged.connect(lambda: handler())
         elif isinstance(w, QLineEdit):
-            w.textChanged.connect(lambda _: self._on_change(self))
+            w.textChanged.connect(lambda _: handler())
 
     def set_preview(self, key: str, text: str):
         w = self._widgets.get(key)
@@ -252,11 +262,28 @@ class FormDialog(QDialog):
                 result[key] = w.text()
         return result
 
+    def changed_values(self) -> dict:
+        """Subset of `values()` restricted to fields the user actually
+        touched (only meaningful when constructed with `track_dirty`)."""
+        all_values = self.values()
+        return {k: v for k, v in all_values.items() if k in self._dirty}
+
     @staticmethod
     def get(parent, title: str, fields: list[dict], on_change=None):
         dlg = FormDialog(parent, title, fields, on_change=on_change)
         if dlg.exec() == QDialog.Accepted:
             return dlg.values()
+        return None
+
+    @staticmethod
+    def get_changed(parent, title: str, fields: list[dict]):
+        """Like `get()`, but returns only the fields the user actually
+        edited (dict may be empty if OK was pressed with no changes), or
+        None if cancelled -- for bulk-edit actions applying one field at a
+        time across multiple entities, leaving untouched fields alone."""
+        dlg = FormDialog(parent, title, fields, track_dirty=True)
+        if dlg.exec() == QDialog.Accepted:
+            return dlg.changed_values()
         return None
 
 
@@ -939,6 +966,20 @@ class CanvasWidget(QGraphicsView):
             self._pan_start = event.position()
             self.setCursor(Qt.ClosedHandCursor)
             return
+        if event.button() == Qt.RightButton and self._scene.selectedItems():
+            # QGraphicsScene's default press handling collapses the current
+            # selection down to just whatever's under the cursor unless
+            # that's already selected -- which breaks "select several
+            # nodes/edges, right-click, Bulk Edit" the moment the click
+            # lands a pixel off an edge's thin path, or on empty canvas
+            # between selected nodes. Keep the existing selection intact
+            # (skip the default handling) unless the click lands on some
+            # *other*, not-yet-selected item -- then fall through to the
+            # normal single-item right-click behavior instead.
+            item = self.itemAt(event.pos())
+            target = _climb_to(item, NodeItem) or _climb_to(item, EdgeItem) or _climb_to(item, GroupBoxItem)
+            if target is None or target.isSelected():
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -985,6 +1026,8 @@ class CanvasWidget(QGraphicsView):
                 if selected_nodes[0].address is not None:
                     menu.addAction("Add Callers...", lambda: self._action_add_callers(selected_nodes[0]))
                     menu.addAction("Add Callees...", lambda: self._action_add_callees(selected_nodes[0]))
+            else:
+                menu.addAction(f"Bulk Edit Nodes ({len(selected_nodes)})...", lambda: self._action_bulk_edit_nodes(selected_nodes))
 
         group_box = _climb_to(item, GroupBoxItem)
         if group_box is not None:
@@ -993,9 +1036,13 @@ class CanvasWidget(QGraphicsView):
             menu.addAction("Edit Group...", lambda: self._action_edit_group(group_box.group))
             menu.addAction("Remove Group (keep nodes)", lambda: self._action_remove_group(group_box.group))
 
-        edge_item = _climb_to(item, EdgeItem)
-        if edge_item is not None:
-            menu.addAction("Edit Edge...", lambda: self._action_edit_edge(edge_item))
+        selected_edge_items = [i for i in self._scene.selectedItems() if isinstance(i, EdgeItem)]
+        if len(selected_edge_items) >= 2:
+            menu.addAction(f"Bulk Edit Edges ({len(selected_edge_items)})...", lambda: self._action_bulk_edit_edges(selected_edge_items))
+        else:
+            edge_item = _climb_to(item, EdgeItem)
+            if edge_item is not None:
+                menu.addAction("Edit Edge...", lambda: self._action_edit_edge(edge_item))
 
         legend_container = _climb_to(item, LegendContainerItem)
         if legend_container is not None:
@@ -1161,6 +1208,37 @@ class CanvasWidget(QGraphicsView):
         self.canvas.set_node_color(node, values["color"] or None)
         self.canvas.set_node_border_color(node, values["border_color"] or None)
 
+    @staticmethod
+    def _common_or_blank(values: set):
+        """The shared value if every entity in the selection agrees, else
+        "" -- used to seed a bulk-edit field so it starts blank (visibly
+        non-committal) whenever the selection disagrees on that field."""
+        return next(iter(values)) if len(values) == 1 else ""
+
+    @staticmethod
+    def _mixed_suffix(values: set) -> str:
+        return " (mixed)" if len(values) > 1 else ""
+
+    def _action_bulk_edit_nodes(self, nodes: list[Node]):
+        labels = {n.label for n in nodes}
+        colors = {n.color for n in nodes}
+        border_colors = {n.border_color for n in nodes}
+        changed = FormDialog.get_changed(self, f"Bulk Edit {len(nodes)} Nodes", [
+            _field("label", "Label" + self._mixed_suffix(labels), kind="multiline", default=self._common_or_blank(labels)),
+            _field("color", "Fill color (blank = default)" + self._mixed_suffix(colors), "color", default=self._common_or_blank(colors)),
+            _field("border_color", "Border color (blank = default)" + self._mixed_suffix(border_colors), "color", default=self._common_or_blank(border_colors)),
+        ])
+        if not changed:
+            return
+        for node in nodes:
+            if "label" in changed:
+                self.canvas.set_node_label(node, changed["label"])
+            if "color" in changed:
+                self.canvas.set_node_color(node, changed["color"] or None)
+            if "border_color" in changed:
+                self.canvas.set_node_border_color(node, changed["border_color"] or None)
+        logger.info("canvas %r: bulk-edited %d node(s): %s", self.canvas.name, len(nodes), sorted(changed))
+
     def _action_edit_edge(self, edge_item: "EdgeItem"):
         if not edge_item.edges:
             return
@@ -1192,6 +1270,59 @@ class CanvasWidget(QGraphicsView):
         self.canvas.set_edge_arrows(edge, arrow_start=values["arrow_start"], arrow_end=values["arrow_end"])
         if values["reverse"]:
             self.canvas.reverse_edge(edge)
+
+    def _action_bulk_edit_edges(self, edge_items: list["EdgeItem"]):
+        edges = [ei.edges[0] for ei in edge_items if ei.edges]
+        if not edges:
+            return
+
+        colors = {e.color for e in edges}
+        thicknesses = {e.thickness for e in edges}
+        styles = {e.style for e in edges}
+        routings = {e.routing for e in edges}
+        arrow_starts = {e.arrow_start for e in edges}
+        arrow_ends = {e.arrow_end for e in edges}
+
+        style_choices = [_EDGE_STYLE_LABELS[s] for s in EDGE_STYLES]
+        style_default = _EDGE_STYLE_LABELS[next(iter(styles))] if len(styles) == 1 else _MIXED_CHOICE
+        if len(styles) > 1:
+            style_choices = [_MIXED_CHOICE] + style_choices
+
+        routing_choices = [_EDGE_ROUTING_LABELS[r] for r in EDGE_ROUTINGS]
+        routing_default = _EDGE_ROUTING_LABELS[next(iter(routings))] if len(routings) == 1 else _MIXED_CHOICE
+        if len(routings) > 1:
+            routing_choices = [_MIXED_CHOICE] + routing_choices
+
+        changed = FormDialog.get_changed(self, f"Bulk Edit {len(edges)} Edges", [
+            _field("color", "Color (blank = default)" + self._mixed_suffix(colors), "color", default=self._common_or_blank(colors)),
+            _field("thickness", "Thickness" + self._mixed_suffix(thicknesses), "float",
+                   next(iter(thicknesses)) if len(thicknesses) == 1 else DEFAULT_EDGE_THICKNESS, range=(0.5, 20.0)),
+            _field("style", "Style" + self._mixed_suffix(styles), "choice", style_default, choices=style_choices),
+            _field("routing", "Routing" + self._mixed_suffix(routings), "choice", routing_default, choices=routing_choices),
+            _field("arrow_start", "Arrow at start (src)" + self._mixed_suffix(arrow_starts), "checkbox",
+                   next(iter(arrow_starts)) if len(arrow_starts) == 1 else False),
+            _field("arrow_end", "Arrow at end (dst)" + self._mixed_suffix(arrow_ends), "checkbox",
+                   next(iter(arrow_ends)) if len(arrow_ends) == 1 else False),
+            _field("reverse", "Swap direction (src <-> dst)", "checkbox", False),
+        ])
+        if not changed:
+            return
+        style_by_label = {v: k for k, v in _EDGE_STYLE_LABELS.items()}
+        routing_by_label = {v: k for k, v in _EDGE_ROUTING_LABELS.items()}
+        for edge in edges:
+            if "color" in changed:
+                self.canvas.set_edge_color(edge, changed["color"] or None)
+            if "thickness" in changed:
+                self.canvas.set_edge_thickness(edge, changed["thickness"])
+            if "style" in changed and changed["style"] != _MIXED_CHOICE:
+                self.canvas.set_edge_style(edge, style_by_label.get(changed["style"], DEFAULT_EDGE_STYLE))
+            if "routing" in changed and changed["routing"] != _MIXED_CHOICE:
+                self.canvas.set_edge_routing(edge, routing_by_label.get(changed["routing"], DEFAULT_EDGE_ROUTING))
+            if "arrow_start" in changed or "arrow_end" in changed:
+                self.canvas.set_edge_arrows(edge, arrow_start=changed.get("arrow_start"), arrow_end=changed.get("arrow_end"))
+            if changed.get("reverse"):
+                self.canvas.reverse_edge(edge)
+        logger.info("canvas %r: bulk-edited %d edge(s): %s", self.canvas.name, len(edges), sorted(changed))
 
     def _action_add_callers(self, node: Node):
         from . import api
