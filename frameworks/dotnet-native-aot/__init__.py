@@ -91,13 +91,21 @@ def _record_evidence(bv, candidates):
     """Feed this detector's result into the shared evidence store (see
     docs/adr/0035-shared-evidence-store-and-context-prompt.md), so the AI
     context prompt and other tools can see it without re-running detection."""
-    if candidates:
-        findings = [
-            f"ReadyToRun module detected at {c.address:#x} "
-            f"(RTR v{c.major_version}.{c.minor_version}, {len(c.sections)} section(s))"
-            for c in candidates
-        ]
-    else:
+    findings = []
+    for address in candidates:
+        try:
+            directory = rtr.ReadyToRunDirectory.read_at(bv, address)
+        except Exception:
+            directory = None
+        if directory is None:
+            findings.append(f"ReadyToRun module detected at {address:#x}")
+        else:
+            findings.append(
+                f"ReadyToRun module detected at {directory.address:#x} "
+                f"(RTR v{directory.major_version}.{directory.minor_version}, "
+                f"{len(directory.sections)} section(s))"
+            )
+    if not findings:
         findings = ["No ReadyToRun module detected"]
     record_evidence(bv, "dotnet_native_aot", findings)
 
