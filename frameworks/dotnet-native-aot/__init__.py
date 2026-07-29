@@ -126,8 +126,11 @@ def _has_rtr_module(bv):
         candidates = []
 
     found = bool(candidates)
+    try:
+        _record_evidence(bv, candidates)
+    except Exception:
+        logger.exception("failed to record dotnet_native_aot evidence")
     bv.session_data["dotnet_native_aot.has_rtr_module"] = found
-    _record_evidence(bv, candidates)
     return found
 
 
