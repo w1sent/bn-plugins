@@ -61,6 +61,7 @@ python scripts/install.py                 # install all plugins (copy mode)
 python scripts/install.py --link          # install all plugins (symlink, for development)
 python scripts/install.py --interactive   # choose which plugins to install
 python scripts/install.py --plugin-dir PATH  # override BN's plugin folder
+python scripts/install.py --install-external # also install/update third-party plugins (see below)
 ```
 
 Copy mode vendors a fresh copy of `core/` and installs each plugin's pinned
@@ -69,6 +70,14 @@ Copy mode vendors a fresh copy of `core/` and installs each plugin's pinned
 without reinstalling (adding a new *file* still requires rerunning the
 installer, since only existing symlinks are refreshed otherwise). Restart
 Binary Ninja after installing or reinstalling.
+
+`--install-external` additionally installs/updates a fixed set of
+third-party Vector 35 plugins that aren't part of this project -- Blob
+Extractor, Kaitai UI Plugin, Snippets UI Plugin, and Tanto -- as plain git
+clones (`git pull` if already present) directly into BN's plugin folder,
+including installing that clone's own `requirements.txt` into its `.deps/`
+the same way this repo's own plugins do. They're untouched by a plain
+`install.py` run and unaffected by `--link`.
 
 Each AI plugin auto-creates `~/.binaryninja/ai-config.json` (LLM provider
 config, shared across AI plugins) on first use if it doesn't already exist,
