@@ -78,10 +78,14 @@ def install_requirements(dest, req_file):
     if deps_dir.exists():
         shutil.rmtree(deps_dir)
     deps_dir.mkdir(exist_ok=True)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-warn-conflicts", "-t", str(deps_dir), "-r", str(req_file)],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-warn-conflicts", "-t", str(deps_dir), "-r", str(req_file)],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        shutil.rmtree(deps_dir)  # don't leave a half/empty .deps dir behind as if it succeeded
+        raise
     print(f"  deps installed -> {deps_dir}")
 
 
@@ -108,7 +112,13 @@ def install_external_plugin(dest_name, display_name, url, bn_plugin_dir):
 def install_external_plugins(bn_plugin_dir):
     print(f"\nInstalling {len(EXTERNAL_PLUGINS)} third-party plugin(s) to {bn_plugin_dir}:\n")
     for dest_name, (display_name, url) in EXTERNAL_PLUGINS.items():
-        install_external_plugin(dest_name, display_name, url, bn_plugin_dir)
+        try:
+            install_external_plugin(dest_name, display_name, url, bn_plugin_dir)
+        except subprocess.CalledProcessError as e:
+            # One plugin's git/pip failure (e.g. an unresolvable transitive
+            # dependency pin upstream) shouldn't block installing the rest --
+            # these are external repos we don't control.
+            print(f"  FAILED {display_name}: {e}")
 
 
 def get_bn_plugin_dir():
