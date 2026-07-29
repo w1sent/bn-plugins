@@ -9,6 +9,8 @@ AI-driven struct suggestion from pointer access patterns.
 | Suggest Struct | Address (right-click) | Suggest a struct for the pointer variable nearest the cursor |
 | Suggest Struct (Memory Region) | Selection (right-click) | Seed a struct sized to the selected byte range, then refine it |
 | Suggest Struct (Batch) | Toolbar / Command palette | Sweep every candidate pointer variable and untyped global, applying directly |
+| Suggest Struct (Local Neighborhood) | Function (right-click) | Sweep candidate pointer variables in this function's direct callees (1-hop) |
+| Suggest Struct (Local Neighborhood, Choose Scope) | Function (right-click) | Same, but pick direction (callees/callers/both) and depth for this run only |
 
 `Suggest Struct` and `Suggest Struct (Memory Region)` preview before applying
 when `suggest_structs.mode` is `single` (see [Preview](#preview) below).
@@ -54,7 +56,15 @@ configured per candidate.
    Browser to review/filter everything the batch run touched, and
    <kbd>Ctrl/Cmd+Z</kbd> to undo the whole batch as one action if you don't
    like the result.
-6. **Tune behavior** in Settings (search "suggest_structs" in BN's
+6. **Scope to a neighborhood** — right-click a function → `Suggest Structs` →
+   `Suggest Struct (Local Neighborhood)` sweeps candidates confined to that
+   function and its direct callees (1-hop) instead of the whole binary;
+   `(Local Neighborhood, Choose Scope)` prompts for direction
+   (`callees`/`callers`/`both`) and depth instead. Same apply-directly,
+   tagged, undoable-as-one-action behavior as the full batch sweep, just
+   over a smaller candidate set. Uses `core.graph.neighborhood` -- see
+   [ADR-0036](../../docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md).
+7. **Tune behavior** in Settings (search "suggest_structs" in BN's
    Settings dialog) — provider, mode, confidence threshold, agent step
    budget — see [Settings](#settings) below. Advanced prompt/temperature
    overrides live in the JSON file at `suggest_structs.config_path`
@@ -169,6 +179,9 @@ result = api.suggest_struct_from_range(bv, selection_start, selection_length)
 
 # Batch sweep every candidate
 results = api.suggest_all(bv, async_run=True, on_complete=my_callback)
+
+# Sweep candidates confined to a function's local neighborhood
+results = api.suggest_scoped(bv, anchor_func, direction="callees", depth=1)
 ```
 
 For full API reference, call `api.help()` in BN's Python console.

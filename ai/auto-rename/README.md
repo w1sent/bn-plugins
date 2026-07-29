@@ -11,6 +11,8 @@ AI-driven variable and function renaming using LLMs.
 | Auto Rename (Filtered) | Command palette | Rename functions matching a regex |
 | Auto Rename All | Toolbar / Command palette | Rename all auto-named functions, using the `auto_rename.*` settings |
 | Auto Rename All (Choose Strategy) | Command palette | Rename all auto-named functions, picking ordering/concurrency for this run only (not persisted) |
+| Auto Rename (Local Neighborhood) | Function (right-click) | Rename this function and its direct callees (1-hop) |
+| Auto Rename (Local Neighborhood, Choose Scope) | Function (right-click) | Same, but pick direction (callees/callers/both) and depth for this run only |
 | Auto Rename Variable | HLIL instruction (right-click) | Rename the variable referenced at this location |
 | Auto Rename Variables (Current Function) | Function (right-click) | Rename all auto-named variables in the current function (function-level batch) |
 | Auto Rename Variables (Selection) | Selection (right-click) | Rename auto-named variables in the selected functions (batch) |
@@ -91,6 +93,18 @@ Bulk renaming (`Auto Rename All`, `Auto Rename (Selection)`, `Auto Rename (Filte
 Ordering under `fixed-pool` is best-effort: functions are *submitted* in order, but with more than one worker there's no guarantee they *finish* in that order. `leaves-first`, `local-bottom-up`, and `info-gain` rely on a callee/deeper function finishing before its dependent is renamed to get better context — combining one of these with `fixed-pool` and more than one worker logs a warning that this benefit may be degraded. `sequential` always preserves ordering exactly.
 
 Use **Auto Rename All (Choose Strategy)** to pick ordering/concurrency for a single run without changing the persisted settings.
+
+## Scoped runs
+
+**Auto Rename (Local Neighborhood)** confines a run to the current function
+plus its direct callees (1-hop) instead of the whole binary -- the
+cheapest, most predictable default, useful when only one area of a large
+binary matters right now. **Auto Rename (Local Neighborhood, Choose
+Scope)** prompts for direction (`callees`, `callers`, or `both`) and depth
+instead of using the 1-hop-callees default. Both use `core.graph.neighborhood`
+under the hood and confine ordering/restriction to the resulting function
+set (`restrict_to`) -- see
+[ADR-0036](../../docs/adr/0036-graph-api-extraction-and-scoped-ai-runs.md).
 
 ## Variable renaming
 
