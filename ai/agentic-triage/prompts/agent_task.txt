@@ -1,0 +1,8 @@
+Investigate the currently loaded binary and identify which frameworks and
+libraries it uses, and which functions are most relevant to each one
+(entry points, init/setup routines, distinctive API call sites). Report
+composition only -- no judgment about what the binary is, does, or is
+for. Start by calling get_evidence to see what's already known.
+
+Deterministic baseline so far:
+${baseline}

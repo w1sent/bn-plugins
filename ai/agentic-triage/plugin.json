@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Agentic Triage",
+  "type": ["ui", "helper"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "AI-generated sample context prompt, editable in a dedicated Triage-style view",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}
