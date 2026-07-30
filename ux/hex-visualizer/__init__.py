@@ -27,7 +27,8 @@ def _register_sidebar():
         return
 
     def do_register():
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QImage, QPainter, QPen
         from PySide6.QtWidgets import QVBoxLayout
         import binaryninjaui as ui
 
@@ -69,7 +70,11 @@ def _register_sidebar():
                 icon = QImage(56, 56, QImage.Format_ARGB32)
                 icon.fill(QColor(0, 0, 0, 0))
                 painter = QPainter(icon)
-                painter.setPen(QColor(255, 255, 255))
+                pen = QPen(QColor(255, 255, 255))
+                pen.setWidth(4)
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+                painter.setRenderHint(QPainter.Antialiasing)
                 # Simple magnifying-glass-over-grid glyph.
                 for x in (14, 26, 38):
                     painter.drawLine(x, 10, x, 34)
