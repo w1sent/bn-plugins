@@ -1,0 +1,12 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "Hex Visualizer",
+  "type": ["ui"],
+  "api": ["python3"],
+  "version": "0.1.0",
+  "author": "",
+  "description": "Sidebar inspector panel that tracks the hex/linear view selection: media preview for image formats plus a hex/ASCII/common-type interpretation table",
+  "minimumbinaryninjaversion": 3164,
+  "x_min_core_version": "0.1.0",
+  "platforms": ["Darwin", "Linux", "Windows"]
+}

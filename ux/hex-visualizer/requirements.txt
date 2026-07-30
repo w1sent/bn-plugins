@@ -1,0 +1,2 @@
+# (no third-party deps -- PySide6/binaryninjaui are provided by BN itself;
+# image decoding uses Qt's own built-in codecs, see docs/adr/0037)
