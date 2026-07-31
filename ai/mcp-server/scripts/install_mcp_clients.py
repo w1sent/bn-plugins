@@ -18,6 +18,12 @@ binja-mcp tool to use for common reversing scenarios -- MCP itself has no
 skill-registration mechanism, so this just copies the file into Claude
 Code's skills directory (see --skill-dest, --no-skill).
 
+Independent of --clients (the `bn` CLI isn't an MCP client -- see
+ADR-0038), this also symlinks the bundled `bn` CLI onto PATH (see
+--cli-dest, --no-cli) -- a symlink, not a copy, so it keeps tracking this
+repo as the CLI evolves, same reasoning as install.py's --link mode for
+the plugin itself.
+
 Usage:
     python install_mcp_clients.py --api-key KEY
     python install_mcp_clients.py --api-key KEY --clients claude-code,opencode
@@ -39,6 +45,7 @@ _DEFAULT_URL = "http://127.0.0.1:9090/mcp"
 _DEFAULT_NAME = "binja-mcp"
 _ALL_CLIENTS = ("claude-code", "codex", "opencode", "deepagents")
 _SKILL_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-mcp" / "SKILL.md"
+_CLI_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-cli" / "scripts" / "bn"
 
 
 class Result:
@@ -205,6 +212,28 @@ def install_skill(dest_dir: Path, dry_run: bool) -> Result:
     return Result("claude-code-skill", "ok", f"installed skill to {dest}")
 
 
+def install_cli(dest_dir: Path, dry_run: bool) -> Result:
+    """Symlink the bn CLI onto PATH -- a symlink, not a copy, so it stays
+    in sync with this repo as the CLI evolves (see module docstring).
+    Falls back to a copy if symlinking isn't possible (e.g. across
+    filesystems)."""
+    if not _CLI_SRC.exists():
+        return Result("bn-cli", "error", f"bn CLI not found at {_CLI_SRC}")
+    dest = dest_dir / "bn"
+    if dry_run:
+        return Result("bn-cli", "ok", f"[dry-run] would link {dest} -> {_CLI_SRC}")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink() or dest.exists():
+        dest.unlink()
+    try:
+        dest.symlink_to(_CLI_SRC)
+    except OSError:
+        shutil.copyfile(_CLI_SRC, dest)
+        dest.chmod(dest.stat().st_mode | 0o111)
+    note = "" if shutil.which("bn") else f" -- {dest_dir} isn't on your PATH; add it to your shell profile"
+    return Result("bn-cli", "ok", f"linked {dest} -> {_CLI_SRC}{note}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", default=_DEFAULT_URL, help=f"MCP endpoint URL (default: {_DEFAULT_URL})")
@@ -237,16 +266,22 @@ def main() -> int:
     parser.add_argument(
         "--no-skill", action="store_true", help="Don't install the binja-mcp Claude Code skill"
     )
+    parser.add_argument(
+        "--cli-dest",
+        default=str(Path.home() / ".local" / "bin"),
+        help="Where to symlink the bn CLI (default: ~/.local/bin)",
+    )
+    parser.add_argument("--no-cli", action="store_true", help="Don't install the bn CLI onto PATH")
     parser.add_argument("--dry-run", action="store_true", help="Print what would change without writing anything")
     args = parser.parse_args()
-
-    if not args.api_key and not args.no_auth:
-        parser.error("pass --api-key <key> (see Plugins -> MCP Server -> Copy API Key), or --no-auth")
 
     clients = [c.strip() for c in args.clients.split(",") if c.strip()]
     unknown = set(clients) - set(_ALL_CLIENTS)
     if unknown:
         parser.error(f"unknown client(s): {', '.join(sorted(unknown))}; choose from {_ALL_CLIENTS}")
+
+    if clients and not args.api_key and not args.no_auth:
+        parser.error("pass --api-key <key> (see Plugins -> MCP Server -> Copy API Key), or --no-auth")
 
     api_key = "" if args.no_auth else args.api_key
     results = []
@@ -263,6 +298,8 @@ def main() -> int:
         )
     if "claude-code" in clients and not args.no_skill:
         results.append(install_skill(Path(args.skill_dest), args.dry_run))
+    if not args.no_cli:
+        results.append(install_cli(Path(args.cli_dest), args.dry_run))
 
     print()
     for r in results:

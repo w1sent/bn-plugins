@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""bn -- CLI front end for a running Binary Ninja MCP server (binja-mcp).
+
+A thin MCP client: every subcommand is exactly one call to the same
+`/mcp` endpoint the MCP server exposes to any other client (see
+ADR-0038 in the plugins repo) -- no separate API, no separate tool
+implementation. stdlib-only by design (http.client, not urllib.request:
+~10ms lighter cold start, and no ssl/email machinery a loopback call
+never needs).
+
+Server discovery, highest priority first:
+  1. --server/--api-key flags
+  2. BN_MCP_URL / BN_MCP_API_KEY environment variables
+  3. the local connection file BN's plugin writes on server start
+     (~/.cache/binja-mcp/server.json) -- zero-config for the common
+     case: BN and this CLI on the same machine.
+
+Run `bn <subcommand> --help` for a subcommand's own options. `bn health`
+checks connectivity/auth and reports which commands the server currently
+has enabled -- unlike --help, which is static and always shows the full
+command set regardless of what the server's settings actually allow.
+"""
+
+import argparse
+import http.client
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+_CONNECTION_FILE = Path.home() / ".cache" / "binja-mcp" / "server.json"
+_PROTOCOL_VERSION = "2025-06-18"
+_LIST_KINDS = ("functions", "symbols", "types", "sections", "imports", "exports", "strings")
+_IL_LEVELS = ("disassembly", "llil", "mlil", "hlil", "llil_ssa", "mlil_ssa", "hlil_ssa")
+
+
+class BnError(Exception):
+    """A clean, user-facing failure -- printed without a traceback."""
+
+
+def _connection_file_data():
+    try:
+        return json.loads(_CONNECTION_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def resolve_connection(args):
+    """--server/BN_MCP_URL wins outright (a deliberate, explicit target --
+    its API key is looked up independently via --api-key/BN_MCP_API_KEY,
+    never silently borrowed from the local connection file, which
+    describes a *different*, same-machine server). Otherwise, fall back
+    to the local connection file, where --api-key/BN_MCP_API_KEY may still
+    override just the key (e.g. a manually rotated one)."""
+    explicit = args.server or os.environ.get("BN_MCP_URL")
+    if explicit:
+        parsed = urlsplit(explicit if "//" in explicit else f"//{explicit}")
+        host, port = parsed.hostname, parsed.port or 9090
+        api_key = args.api_key or os.environ.get("BN_MCP_API_KEY", "")
+        return host, port, api_key
+
+    data = _connection_file_data()
+    if not data:
+        raise BnError(
+            "no running BN MCP server found. Start it from Binary Ninja "
+            "(Plugins -> MCP Server -> Start Server), or point at one explicitly "
+            "with --server/--api-key or BN_MCP_URL/BN_MCP_API_KEY."
+        )
+    api_key = args.api_key or os.environ.get("BN_MCP_API_KEY") or data.get("api_key", "")
+    return data["host"], data["port"], api_key
+
+
+class Connection:
+    """One MCP session per CLI process: initialize -> initialized -> as
+    many tools/call | resources/read | tools/list requests as needed. Not
+    reused across invocations -- pi (and every other harness this targets)
+    runs each subcommand as a fresh process, so there's nothing to persist
+    client-side; all real state (loaded binaries, selection, debugger
+    sessions) lives server-side in BN itself."""
+
+    def __init__(self, host, port, api_key):
+        self.host, self.port, self.api_key = host, port, api_key
+        self._conn = http.client.HTTPConnection(host, port, timeout=30)
+        self._session_id = None
+        self._next_id = 1
+
+    def _headers(self):
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self._session_id:
+            headers["mcp-session-id"] = self._session_id
+        return headers
+
+    @staticmethod
+    def _parse_body(raw):
+        # The transport frames even a single response as SSE
+        # ("event: message\ndata: {...}\n\n") -- pull the JSON out of the
+        # "data:" line. Falls back to plain JSON in case that ever changes.
+        for line in raw.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[len("data:") :].strip())
+        return json.loads(raw)
+
+    def _call(self, method, params=None, notify=False):
+        body = {"jsonrpc": "2.0", "method": method}
+        if not notify:
+            body["id"] = self._next_id
+            self._next_id += 1
+        if params is not None:
+            body["params"] = params
+        try:
+            self._conn.request("POST", "/mcp", body=json.dumps(body), headers=self._headers())
+            resp = self._conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace")
+        except (OSError, http.client.HTTPException) as e:
+            raise BnError(f"connection to {self.host}:{self.port} failed: {e}") from e
+        sid = resp.getheader("mcp-session-id")
+        if sid:
+            self._session_id = sid
+        if resp.status == 401:
+            raise BnError("unauthorized -- wrong or missing API key")
+        if resp.status >= 400:
+            raise BnError(f"HTTP {resp.status}: {raw[:300]}")
+        if notify:
+            return None
+        msg = self._parse_body(raw)
+        if "error" in msg:
+            raise BnError(msg["error"].get("message", str(msg["error"])))
+        return msg["result"]
+
+    def handshake(self):
+        self._call(
+            "initialize",
+            {"protocolVersion": _PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "bn", "version": "0.1"}},
+        )
+        self._call("notifications/initialized", notify=True)
+
+    def call_tool(self, name, arguments):
+        result = self._call("tools/call", {"name": name, "arguments": arguments})
+        if result.get("isError"):
+            raise BnError("".join(c.get("text", "") for c in result.get("content", [])) or "tool call failed")
+        return result
+
+    def read_resource(self, uri):
+        result = self._call("resources/read", {"uri": uri})
+        contents = result.get("contents", [])
+        if contents and "text" in contents[0]:
+            try:
+                return json.loads(contents[0]["text"])
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    def list_tools(self):
+        return self._call("tools/list").get("tools", [])
+
+    def close(self):
+        self._conn.close()
+
+
+def _content_text(result) -> str:
+    return "".join(c.get("text", "") for c in result.get("content", []))
+
+
+def emit(result, fmt: str) -> None:
+    """Print a tool result: `content` text by default (peeling a leading
+    `#binary\\tindex\\tpath` marker line off to stderr, if present, so
+    piping stdout through jq/grep stays clean), or `structuredContent` as
+    real JSON with --format json."""
+    if fmt == "json":
+        structured = result.get("structuredContent")
+        print(json.dumps(structured if structured is not None else {"text": _content_text(result)}, indent=2))
+        return
+    text = _content_text(result)
+    first, _, rest = text.partition("\n")
+    if first.startswith("#binary\t"):
+        print(first[1:], file=sys.stderr)
+        print(rest)
+    else:
+        print(text)
+
+
+def ensure_binary_target(conn: Connection, args) -> None:
+    """Resolve which binary this call should hit *before* making it. An
+    explicit --binary always wins. Otherwise: if something is already
+    explicitly selected (a prior `bn select`, server-side ambient state),
+    leave it alone; if nothing is, default deterministically to index 0
+    rather than depending on GUI focus -- see ADR-0038's "Binary
+    targeting" section. Best-effort: any failure here is swallowed so the
+    real command still runs and surfaces its own, clearer error (e.g. "no
+    binary open") instead of failing inside this pre-flight step."""
+    if args.binary is not None:
+        try:
+            conn.call_tool("select_binary", {"index": args.binary})
+        except BnError:
+            pass
+        return
+    try:
+        selected = conn.read_resource("binary://selected")
+    except BnError:
+        return
+    if selected and selected.get("explicitly_selected"):
+        return
+    try:
+        conn.call_tool("select_binary", {"index": 0})
+    except BnError:
+        pass
+
+
+def cmd_list(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {"kind": args.kind}
+    if args.name_regex:
+        arguments["name_regex"] = args.name_regex
+    if args.fields:
+        arguments["fields"] = [f.strip() for f in args.fields.split(",") if f.strip()]
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    if args.offset is not None:
+        arguments["offset"] = args.offset
+    emit(conn.call_tool("list", arguments), args.format)
+
+
+def cmd_function(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {"name_or_addr": args.name_or_addr}
+    if args.il_level:
+        arguments["il_level"] = args.il_level
+    emit(conn.call_tool("get_function", arguments), args.format)
+
+
+def cmd_select(conn: Connection, args) -> None:
+    emit(conn.call_tool("select_binary", {"index": args.index}), args.format)
+
+
+def cmd_health(args) -> int:
+    print("connection:")
+    try:
+        host, port, api_key = resolve_connection(args)
+    except BnError as e:
+        print(f"  FAIL -- {e}")
+        return 1
+    print(f"  target: http://{host}:{port}")
+    print(f"  api key: {'set' if api_key else '(none -- auth disabled)'}")
+
+    try:
+        raw = http.client.HTTPConnection(host, port, timeout=5)
+        raw.request("GET", "/health")
+        resp = raw.getresponse()
+        resp.read()
+        reachable = resp.status == 200
+        raw.close()
+    except OSError as e:
+        print(f"  reachable: FAIL -- {e}")
+        return 1
+    print(f"  reachable: {'OK' if reachable else f'FAIL (status {resp.status})'}")
+    if not reachable:
+        return 1
+
+    conn = Connection(host, port, api_key)
+    try:
+        conn.handshake()
+        print("  auth: OK")
+    except BnError as e:
+        print(f"  auth: FAIL -- {e}")
+        return 1
+
+    try:
+        names = sorted(t["name"] for t in conn.list_tools())
+    except BnError as e:
+        print(f"  tools/list: FAIL -- {e}")
+        return 1
+    finally:
+        conn.close()
+
+    print(f"\ncommands enabled ({len(names)}):")
+    for name in names:
+        print(f"  {name}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--server", help="MCP server base host[:port] (default: local connection file)")
+    common.add_argument("--api-key", help="API key (default: local connection file, or none if auth is disabled)")
+    common.add_argument(
+        "--binary", type=int, default=None, help="Binary index to target (default: current selection, else index 0)"
+    )
+    common.add_argument("--format", choices=["text", "json"], default="text", help="Output format (default: text)")
+
+    parser = argparse.ArgumentParser(prog="bn", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_list = sub.add_parser(
+        "list", parents=[common], help="List functions/symbols/types/sections/imports/exports/strings"
+    )
+    p_list.add_argument("kind", choices=_LIST_KINDS)
+    p_list.add_argument("--filter", dest="name_regex", help="Substring or regex filter on name (value, for strings)")
+    p_list.add_argument("--fields", help="Comma-separated field names to keep, e.g. name,addr")
+    p_list.add_argument("--limit", type=int, default=None, help="Default: 100")
+    p_list.add_argument("--offset", type=int, default=None, help="Default: 0")
+
+    p_func = sub.add_parser("function", parents=[common], help="Get a function's metadata plus disassembly/IL")
+    p_func.add_argument("name_or_addr", help="Function name, or address (hex or decimal)")
+    p_func.add_argument("--il-level", dest="il_level", choices=_IL_LEVELS, default=None, help="Default: disassembly")
+
+    p_select = sub.add_parser("select", parents=[common], help="Select which open binary subsequent calls target")
+    p_select.add_argument("index", type=int, help="Index into program://binaries")
+
+    sub.add_parser("health", parents=[common], help="Check connectivity, auth, and which commands are enabled")
+
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.command == "health":
+        return cmd_health(args)
+
+    try:
+        host, port, api_key = resolve_connection(args)
+        conn = Connection(host, port, api_key)
+        conn.handshake()
+        try:
+            if args.command == "list":
+                cmd_list(conn, args)
+            elif args.command == "function":
+                cmd_function(conn, args)
+            elif args.command == "select":
+                cmd_select(conn, args)
+        finally:
+            conn.close()
+        return 0
+    except BnError as e:
+        print(f"bn: error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

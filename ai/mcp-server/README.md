@@ -32,21 +32,22 @@ write, script, and debug through a real, running BN session over HTTP.
 
 ### Read (always registered)
 
+Per [ADR-0038](../../docs/adr/0038-binja-cli-skill-frontend.md), the old
+one-tool-per-kind listing tools (`get_functions`, `get_symbols`,
+`get_types`, `get_sections`, `get_imports`, `get_exports`, `get_strings`)
+are gone, replaced by one consolidated `list`. All read/list tools return
+plain text (a header line + tab-separated records), never JSON -- see that
+ADR's "Output format" section.
+
 | Tool | Description |
 |---|---|
 | `get_function(name_or_addr, il_level)` | Function metadata + disassembly/LLIL/MLIL/HLIL/LLIL_SSA/MLIL_SSA/HLIL_SSA |
-| `get_functions(limit, offset)` | Paginated function list |
-| `get_symbols(limit, offset)` | Symbols with names, addresses, types |
-| `get_xrefs_to(addr)` | Cross-references to an address |
-| `get_xrefs_from(addr)` | Cross-references from an address |
-| `get_types()` | All user-defined types |
+| `list(kind, name_regex, fields, limit, offset)` | Filtered, paginated listing; `kind` is one of `functions`/`symbols`/`types`/`sections`/`imports`/`exports`/`strings` |
+| `get_xrefs_to(addr, limit, offset)` | Cross-references to an address |
+| `get_xrefs_from(addr, limit, offset)` | Cross-references from an address |
 | `get_type(name)` | A specific type's definition |
 | `get_data(addr, size)` | Raw bytes at an address (hex) |
-| `get_strings(limit, offset)` | Paginated string list |
-| `get_sections()` | Sections with permissions (inferred from the containing segment) |
-| `get_imports()` | Imported functions/data |
-| `get_exports()` | Exported (globally-bound) functions/data |
-| `search(pattern)` | Search function/symbol names and strings (substring or regex) |
+| `search(pattern)` | Search function/symbol names and strings (substring or regex) across all three kinds at once; for one kind specifically, prefer `list(kind, name_regex=pattern)` |
 
 ### Write -- safe (`mcp_server.write_enabled`, default **on**)
 
@@ -179,6 +180,7 @@ itself, no side effects.
 | `mcp_server.debugging_enabled` | bool | `false` | Debugger control tools |
 | `mcp_server.screenshot_enabled` | bool | `false` | `capture_screenshot` |
 | `mcp_server.debug_logging` | bool | `false` | Reserved for future verbose per-call request/response logging; not yet wired up (see "Future improvements"). A basic INFO-level "tool called: name(args)" line for every call is *always* logged to BN's own log console regardless of this setting |
+| `mcp_server.echo_target_enabled` | bool | `true` | Prepend a `#binary  index  path` line to read/list output identifying which binary the call ran against; the `bn` CLI reroutes this line to stderr so piped stdout stays clean (see ADR-0038) |
 
 ## Menu commands
 
@@ -224,6 +226,23 @@ To configure a client manually: the server listens at
 `http://<bind_address>:<http_port>/mcp` (defaults to
 `http://127.0.0.1:9090/mcp`); get the current API key via Plugins → MCP
 Server → Copy API Key, and send it as `Authorization: Bearer <key>`.
+
+## CLI front end (`bn`)
+
+`skills/binja-cli/scripts/bn` is a stdlib-only Python script that talks to
+this same MCP server as a plain client -- see
+[ADR-0038](../../docs/adr/0038-binja-cli-skill-frontend.md) for the full
+design. It exists for agent harnesses (like `pi`, https://pi.dev) that
+favor a bash-plus-on-demand-skill model over embedding an MCP client, but
+works from any shell. It finds a running server with no configuration via a
+local connection file this plugin writes on server start/removes on stop
+(`~/.cache/binja-mcp/server.json`, 0600) -- see `connection_file.py`; an
+explicit `--server`/`--api-key` (or `BN_MCP_URL`/`BN_MCP_API_KEY`) points it
+at a non-default one instead. Run `bn --help` / `bn health` for its own
+documentation and live status; see the `binja-cli` skill for a usage guide.
+Currently covers read/list only -- write/patch/debug/script tools aren't
+wrapped yet (see that ADR's Considered/rejected and the skill's "What's not
+here" section).
 
 ## Dependencies
 

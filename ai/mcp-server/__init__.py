@@ -78,6 +78,13 @@ register_setting(
     "Log every MCP tool call (timestamp, tool, params) to ~/.binaryninja/logs/mcp_server.log",
     False,
 )
+register_setting(
+    "mcp_server.echo_target_enabled",
+    "Prepend a '#binary  index  path' line to read/list tool output identifying which "
+    "binary the call ran against -- the bn CLI reroutes this line to stderr so piped "
+    "stdout stays clean",
+    True,
+)
 
 
 def _start_command():

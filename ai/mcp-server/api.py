@@ -17,7 +17,7 @@ from typing import Optional
 
 from binaryninja import Settings
 
-from . import administration, debugging, gui, patching, prompts, reading, scripting, undo, writing
+from . import administration, connection_file, debugging, gui, listing, patching, prompts, reading, scripting, undo, writing
 from .core.logging import get_logger
 from .server import MCPServer, generate_api_key
 
@@ -70,6 +70,7 @@ def _register_tools(mcp, settings) -> None:
     an MCP client never sees a tool it isn't allowed to use. Toggling a
     setting takes effect on the next server restart, not live."""
     reading.register(mcp)
+    listing.register(mcp)
     administration.register(mcp)
     prompts.register(mcp)
     if settings.get_bool("mcp_server.write_enabled"):
@@ -102,6 +103,7 @@ def start_server(*, host: Optional[str] = None, port: Optional[int] = None) -> M
         _register_tools(_server.mcp, settings)
         _server.start()
         gui.set_server_running(True, resolved_host, resolved_port)
+        connection_file.write(resolved_host, resolved_port, _current_api_key())
         return _server
 
 
@@ -116,6 +118,7 @@ def stop_server(server: Optional[MCPServer] = None) -> None:
         if target is _server:
             _server = None
         gui.set_server_running(False)
+        connection_file.remove()
 
 
 def get_server_status() -> ServerStatus:

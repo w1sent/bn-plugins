@@ -10,22 +10,25 @@ the read tools.
 from pathlib import Path
 
 import binaryninja
+from mcp.types import CallToolResult
 
 from . import binary_context
 from .concurrency import log_tool_call, serialized
+from .rendering import render_kv, tool_result
 
 
 @serialized
-def select_binary(index: int) -> dict:
+def select_binary(index: int) -> CallToolResult:
     """Select which open binary subsequent tool calls operate on, by its
     index into program://binaries. Persists until the selected binary is
     closed or select_binary() is called again."""
     bv = binary_context.select_binary(index)
-    return {"index": index, "path": bv.file.filename}
+    meta = {"index": index, "path": bv.file.filename}
+    return tool_result(render_kv(meta), meta)
 
 
 @serialized
-def load_binary(path: str) -> dict:
+def load_binary(path: str) -> CallToolResult:
     """Open a binary or .bndb file in the GUI (as a new tab) and select it
     as the current binary for subsequent tool calls."""
     binary_context._require_gui()
@@ -47,7 +50,8 @@ def load_binary(path: str) -> dict:
     for i, (_, view_path) in enumerate(views):
         if view_path == resolved:
             binary_context.select_binary(i)
-            return {"index": i, "path": view_path}
+            meta = {"index": i, "path": view_path}
+            return tool_result(render_kv(meta), meta)
     raise RuntimeError(f"opened {resolved!r} but it isn't showing up in program://binaries yet")
 
 

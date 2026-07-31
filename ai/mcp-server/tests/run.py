@@ -145,6 +145,18 @@ def _run_checks(api, settings):
 
     key = api.ensure_api_key()
 
+    # -- B2. consolidated `list` tool replaces the old per-kind get_* tools -
+    try:
+        names = set(_list_tool_names(server.mcp))
+        removed = {"get_functions", "get_symbols", "get_types", "get_sections", "get_imports", "get_exports", "get_strings"}
+        expected = {"list", "get_function", "get_xrefs_to", "get_xrefs_from", "get_type", "get_data", "search"}
+        assert "list" in names, "consolidated `list` tool not registered"
+        assert not (names & removed), f"old per-kind tools still registered: {names & removed}"
+        assert expected.issubset(names), f"missing: {expected - names}"
+        _report("PASS", "B2. `list` tool present, old per-kind get_* tools gone")
+    except Exception as e:
+        _report("FAIL", "B2. `list` tool present, old per-kind get_* tools gone", str(e))
+
     # -- C. request without a key is rejected -----------------------------
     try:
         code = _get(f"{base_url}/mcp")
