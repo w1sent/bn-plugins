@@ -106,22 +106,29 @@ filtered by the calling shell *before* it becomes a tool result — the
 unfiltered data never touches context. The built-in filter is what MCP relies
 on entirely; the CLI gets it too, plus `jq`/`grep` on top for anything fancier.
 
-## Output format: text by default everywhere, JSON opt-in on the CLI only
+## Output format: text on the MCP wire everywhere, JSON as the CLI's own default
 
-Default output is plain text for both front ends: one header line, then one
-record per line, fields separated by a single tab, no alignment padding
-(padding spaces are pure token cost with no information gain for an LLM
-reader, unlike a human terminal). This applies uniformly — listings,
-`get_function` disassembly/IL, xrefs, everything — not just the newly
-consolidated `list` primitive; disassembly in particular is already
-text-shaped data, and wrapping each instruction line in
-`{"address": ..., "text": ...}` is pure JSON key-repetition overhead for no
-gain.
+Every MCP tool's `content` is plain text: one header line, then one record
+per line, fields separated by a single tab, no alignment padding (padding
+spaces are pure token cost with no information gain for an LLM reader,
+unlike a human terminal). This applies to every tool in every module —
+`reading.py`/`listing.py`/`administration.py`/`writing.py`/`patching.py`/
+`undo.py`/`debugging.py`/`scripting.py` — not just the read/list tier;
+disassembly in particular is already text-shaped data, and wrapping each
+instruction line in `{"address": ..., "text": ...}` is pure JSON
+key-repetition overhead for no gain. The one genuine exception is
+`capture_screenshot` (`gui.py`): image bytes have no meaningful text form,
+so it returns MCP's `Image` content type instead — not an oversight, just
+nothing for this principle to apply to.
 
-JSON is available via `--format json`, CLI-only. It is deliberately *not* a
-parameter on any MCP tool: an MCP caller has no shell to consume JSON with,
-so the param would be dead weight on every single call for a case that
-almost never applies.
+`content` is never JSON, and `format` is deliberately *not* a parameter on
+any MCP tool — an MCP caller has no shell to consume JSON with, so the
+param would be dead weight on every single call for a case that almost
+never applies. `structuredContent` (a real, separate field on every tool
+result, which a plain MCP client simply doesn't render) carries the same
+data as actual JSON regardless — that's what the CLI's `--format json`
+reads. See "Update: CLI JSON-by-default" below for how the CLI's own
+default (not MCP's wire behavior) later changed.
 
 ## Binary targeting: fixed default, no ambient "last selected" state
 
@@ -193,12 +200,48 @@ itself is still being designed; a migration to Rust (or similar) for the
 CLI and/or the MCP server is an explicit possible later step once the
 design has stabilized, not attempted now.
 
-The script's canonical source lives in the skill's own `scripts/` directory
-in this repo (versioned alongside `SKILL.md`, same as today's pattern), but
-installing the skill additionally places it on the user's `PATH` (e.g.
-`~/.local/bin/bn`) rather than leaving it reachable only via the skill
-directory — both the user and any agent should be able to just run `bn`
-directly. (Exact skill directory name/CLI binary name not yet finalized.)
+The script's canonical source lives in `skills/binja-cli/scripts/bn` in this
+repo (versioned alongside `SKILL.md`, same as today's pattern), but
+installing the skill (`install_mcp_clients.py`, `--cli-dest`/`--no-cli`)
+additionally symlinks it onto the user's `PATH` (default `~/.local/bin/bn`)
+rather than leaving it reachable only via the skill directory — both the
+user and any agent should be able to just run `bn` directly.
+
+## Update: full tool coverage, CLI JSON-by-default
+
+Two changes made after the initial build, once live testing against a real
+BN session (not just unit tests) surfaced the actual gaps:
+
+- **Every MCP tool now returns the shared text+structuredContent shape**,
+  not just `reading.py`/`listing.py`/`administration.py`. The first pass
+  left `writing.py`/`patching.py`/`undo.py`/`debugging.py`/`scripting.py`
+  returning raw dicts (auto-JSON-dumped by FastMCP's default conversion),
+  which contradicted this document's own "applies uniformly" claim above —
+  a real documentation/implementation mismatch, not a deliberate scope cut.
+  Fixed by converting all of them the same way.
+- **The CLI now covers every non-execution tool**, not just read/list:
+  `rename-function`/`rename-symbol`/`comment`/`function-comment`/
+  `create-struct`/`load-header`/`set-type`/`create-function` (`writing.py`),
+  `patch-asm`/`edit-hex` (`patching.py`), `undo` (`undo.py`), `screenshot`
+  (`gui.py` — saves the PNG to a file, since a terminal can't render inline
+  images), and `search-docs`/`read-logs`/`create-snippet`/`list-snippets`
+  (`scripting.py`'s non-execution tools). Still deliberately uncovered:
+  all of `debugging.py` (`launch`/breakpoints/step/resume/kill/restart) and
+  `scripting.py`'s `execute_script`/`load_script`/`run_snippet`/
+  `get_script_status`/`cancel_script` — these control a running process or
+  execute arbitrary code, a materially bigger and riskier CLI-ergonomics
+  problem (session/state semantics, not just a stateless request/response)
+  than everything else here, and out of scope for this pass. Raw MCP tool
+  calls remain the way to reach them for now.
+- **The CLI's own default flipped from text to `--format json`** — most
+  agentic callers consume JSON directly regardless of what's easiest for a
+  human to eyeball, so defaulting to it removes a flag most callers would
+  pass anyway. `--format text` is still available for anyone piping into
+  `jq`/`grep`/`awk` or just reading it themselves. This is purely the CLI's
+  own default; it doesn't change anything about MCP's wire behavior above —
+  `content` is still always text, `structuredContent` is still where the
+  CLI's JSON output actually comes from, and `format` is still not an MCP
+  tool parameter.
 
 ## Considered and rejected
 
@@ -218,7 +261,8 @@ directly. (Exact skill directory name/CLI binary name not yet finalized.)
 - **Ambient "last selected binary" as the CLI default** — rejected; a fixed
   default (index 0) removes a class of stale-state bugs outright rather than
   just surfacing them after the fact via a header/flag.
-- **JSON as a default output format, or as an MCP tool parameter** —
-  rejected; JSON's per-record key repetition is pure token cost for
-  no-shell MCP callers, and even for the CLI, plain text is more information
-  -dense than JSON for the same tabular/disassembly-shaped data.
+- **JSON as an MCP tool parameter, or as MCP's `content` format at all** —
+  rejected, still true after the CLI's own default later flipped (see
+  "Update" above): JSON's per-record key repetition is pure token cost for
+  callers with no shell to pipe it through, and `structuredContent` already
+  carries the same data for anything that specifically wants real JSON.

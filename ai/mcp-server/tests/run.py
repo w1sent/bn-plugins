@@ -108,6 +108,11 @@ def _register_settings():
     register_setting("mcp_server.api_key", "test", "")
     register_setting("mcp_server.api_key_generated", "test", False)
     register_setting("mcp_server.scripting_enabled", "test", False)
+    register_setting("mcp_server.write_enabled", "test", True)
+    register_setting("mcp_server.destructive_write_enabled", "test", False)
+    register_setting("mcp_server.undo_enabled", "test", False)
+    register_setting("mcp_server.debugging_enabled", "test", False)
+    register_setting("mcp_server.screenshot_enabled", "test", False)
     return Settings()
 
 
@@ -239,8 +244,11 @@ def _run_checks(api, settings):
         api.stop_server()
 
     # -- J. execute_script() runs synchronously -----------------------------
+    # Tool functions now return CallToolResult (see ADR-0038) -- read the
+    # same shape of data back out via .structuredContent instead of
+    # subscripting the result directly.
     try:
-        result = scripting.execute_script("print(1 + 1)")
+        result = scripting.execute_script("print(1 + 1)").structuredContent
         assert result["status"] == "completed"
         assert result["output"].strip() == "2"
         _report("PASS", "J. execute_script() sync runs and returns output")
@@ -258,15 +266,15 @@ def _run_checks(api, settings):
             "    time.sleep(0.05)\n"
             "print('finished')\n",
             async_run=True,
-        )
+        ).structuredContent
         assert kickoff["status"] == "running"
         job_id = kickoff["job_id"]
         time.sleep(0.1)
-        running_status = scripting.get_script_status(job_id)
+        running_status = scripting.get_script_status(job_id).structuredContent
         assert running_status["status"] == "running"
         scripting.cancel_script(job_id)
         time.sleep(0.3)
-        final_status = scripting.get_script_status(job_id)
+        final_status = scripting.get_script_status(job_id).structuredContent
         assert final_status["status"] == "cancelled"
         _report("PASS", "K. async execute_script + status + cancel")
     except Exception as e:
@@ -279,7 +287,7 @@ def _run_checks(api, settings):
 
         kickoff = scripting.execute_script(
             "import time\ntime.sleep(0.2)\nprint('job-thread-output')\n", async_run=True
-        )
+        ).structuredContent
         import sys as _sys
 
         real_stdout = _sys.stdout
@@ -290,7 +298,7 @@ def _run_checks(api, settings):
             _sys.stdout = real_stdout
         time.sleep(0.4)
         assert marker in captured_main.getvalue(), "main thread's own print() was swallowed"
-        job_result = scripting.get_script_status(kickoff["job_id"])
+        job_result = scripting.get_script_status(kickoff["job_id"]).structuredContent
         assert "job-thread-output" in (job_result["output"] or "")
         _report("PASS", "L. thread-local output capture is isolated per-thread")
     except Exception as e:
@@ -298,7 +306,7 @@ def _run_checks(api, settings):
 
     # -- M. search_docs() finds a real API symbol ----------------------------
     try:
-        docs = scripting.search_docs("BinaryView", limit=5)
+        docs = scripting.search_docs("BinaryView", limit=5).structuredContent
         assert docs["results"], "expected at least one match for 'BinaryView'"
         _report("PASS", "M. search_docs() finds a real API symbol")
     except Exception as e:
@@ -310,7 +318,7 @@ def _run_checks(api, settings):
 
         marker = f"mcp-server test log {time.time()}"
         binaryninja.log_info(marker)
-        logs = scripting.read_logs(limit=10)
+        logs = scripting.read_logs(limit=10).structuredContent
         assert any(marker in line for line in logs["lines"]), "log line not found in read_logs()"
         _report("PASS", "N. read_logs() picks up a log line emitted after registration")
     except Exception as e:
@@ -320,7 +328,7 @@ def _run_checks(api, settings):
     snippet_name = f"mcp_server_test_snippet_{uuid.uuid4().hex[:8]}"
     path = None
     try:
-        snippet = scripting.create_snippet(snippet_name, "print('hi')")
+        snippet = scripting.create_snippet(snippet_name, "print('hi')").structuredContent
         path = Path(snippet["path"])
         assert path.parent.name == "snippets" and path.parent.parent == Path.home() / ".binaryninja"
         assert path.is_file()
@@ -345,6 +353,50 @@ def _run_checks(api, settings):
         if path is not None:
             path.unlink(missing_ok=True)
 
+    # -- Q. every tool category registers cleanly together ------------------
+    # write_enabled is already True by default; destructive_write/undo/
+    # debugging/screenshot default off and have never been registration
+    # -tested before (writing.py/patching.py/undo.py/debugging.py/gui.py had
+    # zero coverage, even at import level) -- flip them all on together and
+    # confirm the whole plugin still imports/registers without error.
+    for key in (
+        "mcp_server.destructive_write_enabled",
+        "mcp_server.undo_enabled",
+        "mcp_server.debugging_enabled",
+        "mcp_server.screenshot_enabled",
+    ):
+        settings.set_bool(key, True)
+    try:
+        server = api.start_server(port=_TEST_PORT)
+        names = set(_list_tool_names(server.mcp))
+        expected = {
+            # writing.py
+            "rename_function", "rename_symbol", "set_comment", "set_function_comment",
+            "create_struct", "load_header", "set_type", "create_function",
+            # patching.py
+            "patch_asm", "edit_hex",
+            # undo.py
+            "undo_action",
+            # debugging.py
+            "launch", "set_breakpoint", "resume", "run_until", "step_into", "step_over",
+            "step_return", "kill_process", "restart",
+            # gui.py
+            "capture_screenshot",
+        }
+        assert expected.issubset(names), f"missing: {expected - names}"
+        _report("PASS", "Q. every tool category (write/destructive/undo/debugging/gui) registers cleanly")
+    except Exception as e:
+        _report("FAIL", "Q. every tool category (write/destructive/undo/debugging/gui) registers cleanly", str(e))
+    finally:
+        api.stop_server()
+        for key in (
+            "mcp_server.destructive_write_enabled",
+            "mcp_server.undo_enabled",
+            "mcp_server.debugging_enabled",
+            "mcp_server.screenshot_enabled",
+        ):
+            settings.set_bool(key, False)
+
 
 def main():
     api = _load_plugin_modules()
@@ -355,6 +407,10 @@ def main():
     orig_api_key = settings.get_string("mcp_server.api_key")
     orig_api_key_generated = settings.get_bool("mcp_server.api_key_generated")
     orig_scripting_enabled = settings.get_bool("mcp_server.scripting_enabled")
+    orig_destructive_write_enabled = settings.get_bool("mcp_server.destructive_write_enabled")
+    orig_undo_enabled = settings.get_bool("mcp_server.undo_enabled")
+    orig_debugging_enabled = settings.get_bool("mcp_server.debugging_enabled")
+    orig_screenshot_enabled = settings.get_bool("mcp_server.screenshot_enabled")
     try:
         _run_checks(api, settings)
     finally:
@@ -362,6 +418,10 @@ def main():
         settings.set_string("mcp_server.api_key", orig_api_key)
         settings.set_bool("mcp_server.api_key_generated", orig_api_key_generated)
         settings.set_bool("mcp_server.scripting_enabled", orig_scripting_enabled)
+        settings.set_bool("mcp_server.destructive_write_enabled", orig_destructive_write_enabled)
+        settings.set_bool("mcp_server.undo_enabled", orig_undo_enabled)
+        settings.set_bool("mcp_server.debugging_enabled", orig_debugging_enabled)
+        settings.set_bool("mcp_server.screenshot_enabled", orig_screenshot_enabled)
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
 

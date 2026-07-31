@@ -70,7 +70,13 @@ def set_server_running(running: bool, host: str = None, port: int = None) -> Non
 def capture_screenshot() -> Image:
     """Capture a screenshot of the whole Binary Ninja window, returned
     inline as an image. Useful when you want to show the user (or refer
-    back to) exactly what's currently on screen."""
+    back to) exactly what's currently on screen.
+
+    Deliberately not routed through rendering.tool_result like every other
+    tool in this plugin (see ADR-0038): image bytes have no meaningful
+    plain-text form, so there's nothing for that module's text-first
+    design to apply to here. This is the one genuine exception, not an
+    oversight."""
     _require_gui()
     result = {}
 

@@ -34,6 +34,17 @@ def write(host: str, port: int, api_key: str) -> None:
 
 
 def remove() -> None:
+    """Remove the connection file, but only if it still describes *this*
+    process. The file path isn't scoped per server instance -- a second,
+    independent process calling start_server()/stop_server() against a
+    different port (e.g. a test harness run alongside a real, separately
+    -running BN) would otherwise delete a live server's connection info
+    out from under it just by stopping its own, unrelated server. Confirmed
+    live: exactly this happened during development, when test scripts'
+    stop_server() calls repeatedly deleted the real BN server's file."""
+    data = read()
+    if data is not None and data.get("pid") != os.getpid():
+        return
     _PATH.unlink(missing_ok=True)
 
 

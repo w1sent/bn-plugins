@@ -17,14 +17,16 @@ non-interactive compile entry point appears in a future BN version.
 from typing import Union
 
 import binaryninja
+from mcp.types import CallToolResult
 
 from .binary_context import get_current_view
 from .concurrency import log_tool_call, serialized
 from .reading import _parse_addr
+from .rendering import render_kv, tool_result
 
 
 @serialized
-def patch_asm(addr: Union[int, str], assembly: str) -> dict:
+def patch_asm(addr: Union[int, str], assembly: str) -> CallToolResult:
     """Assemble `assembly` for the current binary's architecture and write
     the resulting bytes at `addr`, overwriting whatever was there. The new
     instruction(s) may be a different length than what they replace."""
@@ -34,11 +36,12 @@ def patch_asm(addr: Union[int, str], assembly: str) -> dict:
     old_bytes = bv.read(a, len(new_bytes))
     bv.write(a, new_bytes)
     binaryninja.log_info(f"[mcp-server] patch_asm @ {hex(a)}: {old_bytes.hex()} -> {new_bytes.hex()} ({assembly!r})")
-    return {"address": hex(a), "old_bytes": old_bytes.hex(), "new_bytes": new_bytes.hex()}
+    meta = {"address": hex(a), "old_bytes": old_bytes.hex(), "new_bytes": new_bytes.hex()}
+    return tool_result(render_kv(meta), meta)
 
 
 @serialized
-def edit_hex(addr: Union[int, str], hex: str) -> dict:
+def edit_hex(addr: Union[int, str], hex: str) -> CallToolResult:
     """Overwrite the binary's bytes at `addr` with raw hex (e.g. "9090")."""
     bv = get_current_view()
     a = _parse_addr(addr)
@@ -47,7 +50,8 @@ def edit_hex(addr: Union[int, str], hex: str) -> dict:
     bv.write(a, new_bytes)
     addr_str = f"0x{a:x}"
     binaryninja.log_info(f"[mcp-server] edit_hex @ {addr_str}: {old_bytes.hex()} -> {new_bytes.hex()}")
-    return {"address": addr_str, "old_bytes": old_bytes.hex(), "new_bytes": new_bytes.hex()}
+    meta = {"address": addr_str, "old_bytes": old_bytes.hex(), "new_bytes": new_bytes.hex()}
+    return tool_result(render_kv(meta), meta)
 
 
 _TOOLS = (

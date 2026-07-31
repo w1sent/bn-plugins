@@ -35,9 +35,11 @@ write, script, and debug through a real, running BN session over HTTP.
 Per [ADR-0038](../../docs/adr/0038-binja-cli-skill-frontend.md), the old
 one-tool-per-kind listing tools (`get_functions`, `get_symbols`,
 `get_types`, `get_sections`, `get_imports`, `get_exports`, `get_strings`)
-are gone, replaced by one consolidated `list`. All read/list tools return
-plain text (a header line + tab-separated records), never JSON -- see that
-ADR's "Output format" section.
+are gone, replaced by one consolidated `list`. Every tool in this plugin --
+not just read/list -- returns plain text (a header line + tab-separated
+records for listings, `key: value` lines for single records), never JSON;
+the one exception is `capture_screenshot` (image bytes have no text form).
+See that ADR's "Output format" section.
 
 | Tool | Description |
 |---|---|
@@ -136,7 +138,7 @@ run to completion, silently missing the breakpoint.
 
 | Tool | Description |
 |---|---|
-| `capture_screenshot()` | Capture the whole BN window, returned as inline MCP image content |
+| `capture_screenshot()` | Capture the whole BN window, returned as inline MCP image content -- the one tool in this plugin that does *not* return plain text (see ADR-0038's "Output format" section) |
 
 ## Resources
 
@@ -240,9 +242,18 @@ local connection file this plugin writes on server start/removes on stop
 explicit `--server`/`--api-key` (or `BN_MCP_URL`/`BN_MCP_API_KEY`) points it
 at a non-default one instead. Run `bn --help` / `bn health` for its own
 documentation and live status; see the `binja-cli` skill for a usage guide.
-Currently covers read/list only -- write/patch/debug/script tools aren't
-wrapped yet (see that ADR's Considered/rejected and the skill's "What's not
-here" section).
+Defaults to `--format json`; pass `--format text` for the tab-separated form.
+
+Covers every non-execution tool: `list`/`function`/`select` (read),
+`rename-function`/`rename-symbol`/`comment`/`function-comment`/
+`create-struct`/`load-header`/`set-type`/`create-function` (safe write),
+`patch-asm`/`edit-hex` (destructive write), `undo`, `screenshot` (saves a
+PNG to a file), and `search-docs`/`read-logs`/`create-snippet`/
+`list-snippets` (non-execution scripting). Deliberately not covered: all of
+`debugging.py` and `scripting.py`'s `execute_script`/`load_script`/
+`run_snippet`/`get_script_status`/`cancel_script` -- process/execution
+control is a bigger, riskier CLI-ergonomics problem than everything else
+here (see ADR-0038's "Update" section); use raw MCP tool calls for those.
 
 ## Dependencies
 

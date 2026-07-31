@@ -235,6 +235,114 @@ def cmd_select(conn: Connection, args) -> None:
     emit(conn.call_tool("select_binary", {"index": args.index}), args.format)
 
 
+# -- writing.py (safe write; needs mcp_server.write_enabled) ----------------
+
+
+def cmd_rename_function(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("rename_function", {"addr": args.addr, "name": args.name}), args.format)
+
+
+def cmd_rename_symbol(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("rename_symbol", {"addr": args.addr, "name": args.name}), args.format)
+
+
+def cmd_comment(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("set_comment", {"addr": args.addr, "comment": args.comment}), args.format)
+
+
+def cmd_function_comment(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("set_function_comment", {"addr": args.addr, "comment": args.comment}), args.format)
+
+
+def cmd_create_struct(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("create_struct", {"c_struct": args.c_struct}), args.format)
+
+
+def cmd_load_header(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("load_header", {"path": args.path}), args.format)
+
+
+def cmd_set_type(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("set_type", {"addr": args.addr, "type_name": args.type_name}), args.format)
+
+
+def cmd_create_function(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("create_function", {"addr": args.addr}), args.format)
+
+
+# -- patching.py (destructive write; needs mcp_server.destructive_write_enabled) --
+
+
+def cmd_patch_asm(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("patch_asm", {"addr": args.addr, "assembly": args.assembly}), args.format)
+
+
+def cmd_edit_hex(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("edit_hex", {"addr": args.addr, "hex": args.hex_bytes}), args.format)
+
+
+# -- undo.py (needs mcp_server.undo_enabled) ---------------------------------
+
+
+def cmd_undo(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {} if args.steps is None else {"steps": args.steps}
+    emit(conn.call_tool("undo_action", arguments), args.format)
+
+
+# -- gui.py (needs mcp_server.screenshot_enabled) ----------------------------
+
+
+def cmd_screenshot(conn: Connection, args) -> None:
+    import base64
+
+    result = conn.call_tool("capture_screenshot", {})
+    content = (result.get("content") or [{}])[0]
+    data = content.get("data")
+    if not data:
+        raise BnError("capture_screenshot returned no image data")
+    out_path = Path(args.out) if args.out else Path.cwd() / "bn-screenshot.png"
+    out_path.write_bytes(base64.b64decode(data))
+    print(str(out_path))
+
+
+# -- scripting.py non-execution tools (needs mcp_server.scripting_enabled) --
+
+
+def cmd_search_docs(conn: Connection, args) -> None:
+    arguments = {"pattern": args.pattern}
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    emit(conn.call_tool("search_docs", arguments), args.format)
+
+
+def cmd_read_logs(conn: Connection, args) -> None:
+    arguments = {}
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    if args.offset is not None:
+        arguments["offset"] = args.offset
+    emit(conn.call_tool("read_logs", arguments), args.format)
+
+
+def cmd_create_snippet(conn: Connection, args) -> None:
+    emit(conn.call_tool("create_snippet", {"name": args.name, "script": args.script}), args.format)
+
+
+def cmd_list_snippets(conn: Connection, args) -> None:
+    emit(conn.call_tool("list_snippets", {}), args.format)
+
+
 def cmd_health(args) -> int:
     print("connection:")
     try:
@@ -288,7 +396,15 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--binary", type=int, default=None, help="Binary index to target (default: current selection, else index 0)"
     )
-    common.add_argument("--format", choices=["text", "json"], default="text", help="Output format (default: text)")
+    common.add_argument("--format", choices=["text", "json"], default="json", help="Output format (default: json)")
+
+    # Same as `common` minus --binary, for tools that don't operate on any
+    # particular binary (search_docs/read_logs/snippets touch BN's API docs,
+    # log file, or snippets/ dir; capture_screenshot grabs the whole window).
+    global_only = argparse.ArgumentParser(add_help=False)
+    global_only.add_argument("--server", help="MCP server base host[:port] (default: local connection file)")
+    global_only.add_argument("--api-key", help="API key (default: local connection file, or none if auth is disabled)")
+    global_only.add_argument("--format", choices=["text", "json"], default="json", help="Output format (default: json)")
 
     parser = argparse.ArgumentParser(prog="bn", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -311,7 +427,101 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("health", parents=[common], help="Check connectivity, auth, and which commands are enabled")
 
+    # -- writing.py (needs mcp_server.write_enabled, default on) ------------
+    p_rf = sub.add_parser("rename-function", parents=[common], help="Rename a function")
+    p_rf.add_argument("addr")
+    p_rf.add_argument("name")
+
+    p_rs = sub.add_parser("rename-symbol", parents=[common], help="Rename the symbol at an address")
+    p_rs.add_argument("addr")
+    p_rs.add_argument("name")
+
+    p_c = sub.add_parser("comment", parents=[common], help="Set a comment at an address")
+    p_c.add_argument("addr")
+    p_c.add_argument("comment")
+
+    p_fc = sub.add_parser("function-comment", parents=[common], help="Set a function-level comment")
+    p_fc.add_argument("addr")
+    p_fc.add_argument("comment")
+
+    p_cs = sub.add_parser(
+        "create-struct", parents=[common], help='Define a struct type, e.g. "struct node { int32_t id; };"'
+    )
+    p_cs.add_argument("c_struct")
+
+    p_lh = sub.add_parser("load-header", parents=[common], help="Define every type declared in a C header file")
+    p_lh.add_argument("path")
+
+    p_st = sub.add_parser("set-type", parents=[common], help="Apply a data type to an address")
+    p_st.add_argument("addr")
+    p_st.add_argument("type_name")
+
+    p_cf = sub.add_parser("create-function", parents=[common], help="Create a function at an address")
+    p_cf.add_argument("addr")
+
+    # -- patching.py (needs mcp_server.destructive_write_enabled, default off) --
+    p_pa = sub.add_parser("patch-asm", parents=[common], help="Assemble and write bytes at an address")
+    p_pa.add_argument("addr")
+    p_pa.add_argument("assembly")
+
+    p_eh = sub.add_parser("edit-hex", parents=[common], help="Overwrite bytes at an address with raw hex")
+    p_eh.add_argument("addr")
+    p_eh.add_argument("hex_bytes", metavar="hex", help='Raw hex, e.g. "9090"')
+
+    # -- undo.py (needs mcp_server.undo_enabled, default off) ---------------
+    p_undo = sub.add_parser(
+        "undo", parents=[common], help="Revert BN's undo stack -- includes the user's own manual edits too"
+    )
+    p_undo.add_argument("--steps", type=int, default=None, help="Default: 1")
+
+    # -- gui.py (needs mcp_server.screenshot_enabled, default off) ----------
+    p_shot = sub.add_parser("screenshot", parents=[global_only], help="Capture the BN window to a PNG file")
+    p_shot.add_argument("--out", default=None, help="Output path (default: ./bn-screenshot.png)")
+
+    # -- scripting.py non-execution tools (needs mcp_server.scripting_enabled) --
+    p_sd = sub.add_parser("search-docs", parents=[global_only], help="Search Binary Ninja's Python API")
+    p_sd.add_argument("pattern")
+    p_sd.add_argument("--limit", type=int, default=None, help="Default: 30")
+
+    p_rl = sub.add_parser("read-logs", parents=[global_only], help="Read recent BN log lines (most recent first)")
+    p_rl.add_argument("--limit", type=int, default=None, help="Default: 100")
+    p_rl.add_argument("--offset", type=int, default=None, help="Default: 0")
+
+    p_csn = sub.add_parser(
+        "create-snippet", parents=[global_only], help="Save a script into BN's Snippet Manager by name"
+    )
+    p_csn.add_argument("name")
+    p_csn.add_argument("script", help="Script text; for multi-line scripts use $(cat file.py) or shell quoting")
+
+    sub.add_parser("list-snippets", parents=[global_only], help="List snippets in BN's Snippet Manager")
+
     return parser
+
+
+_BINARY_SCOPED_COMMANDS = {
+    "list": cmd_list,
+    "function": cmd_function,
+    "select": cmd_select,
+    "rename-function": cmd_rename_function,
+    "rename-symbol": cmd_rename_symbol,
+    "comment": cmd_comment,
+    "function-comment": cmd_function_comment,
+    "create-struct": cmd_create_struct,
+    "load-header": cmd_load_header,
+    "set-type": cmd_set_type,
+    "create-function": cmd_create_function,
+    "patch-asm": cmd_patch_asm,
+    "edit-hex": cmd_edit_hex,
+    "undo": cmd_undo,
+}
+
+_GLOBAL_COMMANDS = {
+    "screenshot": cmd_screenshot,
+    "search-docs": cmd_search_docs,
+    "read-logs": cmd_read_logs,
+    "create-snippet": cmd_create_snippet,
+    "list-snippets": cmd_list_snippets,
+}
 
 
 def main(argv=None) -> int:
@@ -320,17 +530,14 @@ def main(argv=None) -> int:
     if args.command == "health":
         return cmd_health(args)
 
+    handler = _BINARY_SCOPED_COMMANDS.get(args.command) or _GLOBAL_COMMANDS.get(args.command)
+
     try:
         host, port, api_key = resolve_connection(args)
         conn = Connection(host, port, api_key)
         conn.handshake()
         try:
-            if args.command == "list":
-                cmd_list(conn, args)
-            elif args.command == "function":
-                cmd_function(conn, args)
-            elif args.command == "select":
-                cmd_select(conn, args)
+            handler(conn, args)
         finally:
             conn.close()
         return 0

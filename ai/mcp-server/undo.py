@@ -7,13 +7,15 @@ discard the user's own work.
 """
 
 import binaryninja
+from mcp.types import CallToolResult
 
 from .binary_context import get_current_view
 from .concurrency import log_tool_call, serialized
+from .rendering import render_kv, tool_result
 
 
 @serialized
-def undo_action(steps: int = 1) -> dict:
+def undo_action(steps: int = 1) -> CallToolResult:
     """Revert the last `steps` change(s) to the current binary via Binary
     Ninja's native undo mechanism. This affects the whole undo stack --
     including manual edits made by the user in the GUI, not just changes
@@ -22,7 +24,8 @@ def undo_action(steps: int = 1) -> dict:
     for _ in range(steps):
         bv.file.undo()
     binaryninja.log_info(f"[mcp-server] undo_action: reverted {steps} step(s)")
-    return {"steps": steps}
+    meta = {"steps": steps}
+    return tool_result(render_kv(meta), meta)
 
 
 def register(mcp) -> None:

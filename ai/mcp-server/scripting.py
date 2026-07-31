@@ -26,10 +26,12 @@ from typing import Optional
 
 import binaryninja
 from binaryninja.enums import LogLevel
+from mcp.types import CallToolResult
 
 from . import binary_context
 from .concurrency import log_tool_call, serialized
 from .core.logging import get_logger
+from .rendering import render_kv, render_table, tool_result
 
 logger = get_logger("mcp_server")
 
@@ -140,7 +142,7 @@ def _run_script_body(script: str, cancel_event: threading.Event) -> str:
 
 
 @serialized
-def _execute_sync(script: str) -> dict:
+def _execute_sync(script: str) -> CallToolResult:
     # The call itself is logged generically by log_tool_call (see
     # concurrency.py) at registration time -- this only logs the *outcome*,
     # which a generic wrapper can't know (error vs completed).
@@ -150,10 +152,11 @@ def _execute_sync(script: str) -> dict:
         binaryninja.log_error(f"[mcp-server] execute_script failed: {exc}")
         logger.error(f"execute_script failed: {exc}\n{traceback.format_exc()}")
         raise
-    return {"status": "completed", "output": output}
+    meta = {"status": "completed", "output": output}
+    return tool_result(render_kv(meta), meta)
 
 
-def _execute_async(script: str) -> dict:
+def _execute_async(script: str) -> CallToolResult:
     job_id = uuid.uuid4().hex
     job = _ScriptJob(id=job_id)
     with _jobs_lock:
@@ -173,10 +176,11 @@ def _execute_async(script: str) -> dict:
 
     job.thread = threading.Thread(target=runner, name=f"mcp-script-{job_id}", daemon=True)
     job.thread.start()
-    return {"status": "running", "job_id": job_id}
+    meta = {"status": "running", "job_id": job_id}
+    return tool_result(render_kv(meta), meta)
 
 
-def execute_script(script: str, async_run: bool = False) -> dict:
+def execute_script(script: str, async_run: bool = False) -> CallToolResult:
     """Execute a Python script inside the running Binary Ninja process.
 
     By default runs synchronously and blocks other MCP tool calls until it
@@ -197,7 +201,7 @@ def execute_script(script: str, async_run: bool = False) -> dict:
     return _execute_async(script)
 
 
-def load_script(path: str, async_run: bool = False) -> dict:
+def load_script(path: str, async_run: bool = False) -> CallToolResult:
     """Load a Python script file and execute it, same semantics as
     execute_script (including the async_run flag)."""
     script = Path(path).expanduser().read_text()
@@ -205,25 +209,26 @@ def load_script(path: str, async_run: bool = False) -> dict:
 
 
 @serialized
-def get_script_status(job_id: str) -> dict:
+def get_script_status(job_id: str) -> CallToolResult:
     """Check the status/result of an async execute_script/load_script job."""
     with _jobs_lock:
         job = _jobs.get(job_id)
-    if job is None:
-        return {"status": "not_found"}
-    return {"status": job.status, "output": job.output, "error": job.error}
+    meta = {"status": "not_found"} if job is None else {"status": job.status, "output": job.output, "error": job.error}
+    return tool_result(render_kv(meta), meta)
 
 
 @serialized
-def cancel_script(job_id: str) -> dict:
+def cancel_script(job_id: str) -> CallToolResult:
     """Request cancellation of a running async script job. Best-effort --
     only takes effect if the script itself calls should_cancel()."""
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
-        return {"status": "not_found"}
+        meta = {"status": "not_found"}
+        return tool_result(render_kv(meta), meta)
     job.cancel_event.set()
-    return {"status": "cancel_requested"}
+    meta = {"status": "cancel_requested"}
+    return tool_result(render_kv(meta), meta)
 
 
 def _matches(pattern: str, regex: Optional[re.Pattern], text: str) -> bool:
@@ -235,7 +240,7 @@ def _matches(pattern: str, regex: Optional[re.Pattern], text: str) -> bool:
 
 
 @serialized
-def search_docs(pattern: str, limit: int = 30) -> dict:
+def search_docs(pattern: str, limit: int = 30) -> CallToolResult:
     """Search Binary Ninja's Python API (binaryninja package) for
     classes/functions whose name or docstring matches `pattern` (substring,
     or a regex if `pattern` compiles as one)."""
@@ -277,7 +282,7 @@ def search_docs(pattern: str, limit: int = 30) -> dict:
             if scan_module(mod):
                 break
 
-    return {"results": results}
+    return tool_result(render_table(results), {"results": results})
 
 
 def _ensure_log_redirect():
@@ -290,17 +295,23 @@ def _ensure_log_redirect():
 
 
 @serialized
-def read_logs(limit: int = 100, offset: int = 0) -> dict:
+def read_logs(limit: int = 100, offset: int = 0) -> CallToolResult:
     """Read recent Binary Ninja log lines (most recent first), paginated."""
     if not _BN_CONSOLE_LOG.exists():
-        return {"lines": [], "total": 0}
-    lines = _BN_CONSOLE_LOG.read_text(errors="replace").splitlines()
-    lines.reverse()
-    return {"lines": lines[offset : offset + limit], "total": len(lines)}
+        return tool_result("(no results)", {"lines": [], "total": 0})
+    all_lines = _BN_CONSOLE_LOG.read_text(errors="replace").splitlines()
+    all_lines.reverse()
+    lines = all_lines[offset : offset + limit]
+    # Log lines are already formatted, human-readable text -- join plain
+    # rather than force them through render_table's header+column shape,
+    # which would add nothing but a "line" header for one column of
+    # already-structured text.
+    text = "\n".join(lines) if lines else "(no results)"
+    return tool_result(text, {"lines": lines, "total": len(all_lines)})
 
 
 @serialized
-def create_snippet(name: str, script: str) -> dict:
+def create_snippet(name: str, script: str) -> CallToolResult:
     """Save a reusable script snippet by name into BN's own snippets/
     directory, so it shows up in BN's Snippet Manager (not just something
     load_script can read back). Refuses to overwrite an existing snippet --
@@ -312,19 +323,20 @@ def create_snippet(name: str, script: str) -> dict:
     if path.exists():
         raise FileExistsError(f"snippet {name!r} already exists at {path}; choose a different name")
     path.write_text(script)
-    return {"path": str(path)}
+    meta = {"path": str(path)}
+    return tool_result(render_kv(meta), meta)
 
 
 @serialized
-def list_snippets() -> dict:
+def list_snippets() -> CallToolResult:
     """List the snippets available in BN's own snippets/ directory (the
     same ones visible in BN's Snippet Manager), by name."""
-    if not _SNIPPETS_DIR.is_dir():
-        return {"snippets": []}
-    return {"snippets": sorted(p.stem for p in _SNIPPETS_DIR.glob("*.py"))}
+    names = sorted(p.stem for p in _SNIPPETS_DIR.glob("*.py")) if _SNIPPETS_DIR.is_dir() else []
+    rows = [{"name": n} for n in names]
+    return tool_result(render_table(rows), {"snippets": names})
 
 
-def run_snippet(name: str, async_run: bool = False) -> dict:
+def run_snippet(name: str, async_run: bool = False) -> CallToolResult:
     """Run a snippet from BN's snippets/ directory by name (see
     list_snippets), same semantics as execute_script (including the
     async_run flag)."""
