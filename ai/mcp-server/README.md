@@ -113,6 +113,7 @@ commercial-only headless mode when testing plugins.
 |---|---|
 | `select_binary(index)` | Select which open binary subsequent tool calls operate on, by index into `program://binaries` |
 | `load_binary(path)` | Open a binary/`.bndb` as a new GUI tab and select it |
+| `save_all()` | Save every open binary's analysis database -- creates a `.bndb` next to the original file for binaries that don't have one yet, otherwise saves a snapshot to the existing one |
 
 ### Debugging (`mcp_server.debugging_enabled`, default **off**)
 

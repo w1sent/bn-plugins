@@ -1,6 +1,6 @@
 ---
 name: binja-cli
-description: Use the `bn` CLI to read, annotate, and patch a live Binary Ninja session from a shell -- list functions/symbols/types/sections/imports/exports/strings, inspect a function's disassembly/IL, rename/comment/retype/patch, capture a screenshot, and check server connectivity -- whenever you have bash access and a `bn` command (or `scripts/bn` in this skill) instead of, or alongside, MCP tools. Use when reverse engineering a binary, hunting for specific functions/strings/imports, documenting findings, patching bytes, or checking whether the MCP server and its commands are actually reachable.
+description: Use the `bn` CLI to read, annotate, and patch a live Binary Ninja session from a shell -- list functions/symbols/types/sections/imports/exports/strings, inspect a function's disassembly/IL, rename/comment/retype/patch, capture a screenshot, check server connectivity, and start/close/restart the Binary Ninja application itself -- whenever you have bash access and a `bn` command (or `scripts/bn` in this skill) instead of, or alongside, MCP tools. Use when reverse engineering a binary, hunting for specific functions/strings/imports, documenting findings, patching bytes, launching or relaunching Binary Ninja, or checking whether the MCP server and its commands are actually reachable.
 ---
 
 `bn` is a thin client for a running Binary Ninja MCP server (binja-mcp) --
@@ -9,13 +9,26 @@ shaped for a shell instead of a tool-call protocol. Run `bn --help` for the
 full subcommand list and `bn <subcommand> --help` for a subcommand's own
 options -- that's the actual documentation; don't guess flags.
 
-**Check `bn health` first if anything's unclear.** It reports whether the
-server is reachable, whether your API key is valid, and exactly which
-commands are enabled right now (server settings gate categories the same
-way they do for MCP clients -- `--help` always shows the full set
-regardless of what's actually turned on). A command that isn't listed by
-`health` is a settings problem on the BN side, not something to route
-around.
+**Check `bn health` first if anything's unclear.** It reports whether a BN
+process is running at all, whether its server is reachable, whether your
+API key is valid, and exactly which commands are enabled right now (server
+settings gate categories the same way they do for MCP clients -- `--help`
+always shows the full set regardless of what's actually turned on). A
+command that isn't listed by `health` is a settings problem on the BN side,
+not something to route around; "process: not running" or "process:
+unknown" (no local connection file) means there's nothing to reach yet --
+see `bn instance start` below.
+
+**No BN running yet, or need to reload a plugin change?** `bn instance
+start` launches the Binary Ninja application itself (local process, not an
+MCP call -- there's no server to call until BN is up); `bn instance close`
+sends it SIGTERM, force-killing with SIGKILL only if it hasn't exited within
+`--timeout` seconds (default 15s); `bn instance restart` is the two
+combined, e.g. after installing a new/changed plugin file that needs BN
+relaunched to load. `bn instance save-all` saves every open binary's
+analysis database (creating a `.bndb` next to the original file for one
+that doesn't have one yet) -- run it before `close`/`restart` if unsaved
+analysis work should survive.
 
 ## Core workflow
 

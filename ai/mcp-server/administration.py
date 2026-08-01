@@ -3,8 +3,9 @@
 `select_binary`/`load_binary` set an explicit selection in binary_context,
 which every read/write tool's `get_current_view()` call then prefers over
 the GUI's currently-focused tab (Phase 3's original fallback behavior).
-Always registered -- there's no gating setting for administration, same as
-the read tools.
+`save_all` is unrelated to selection -- it saves every open binary, not
+just the current one. Always registered -- there's no gating setting for
+administration, same as the read tools.
 """
 
 from pathlib import Path
@@ -14,7 +15,7 @@ from mcp.types import CallToolResult
 
 from . import binary_context
 from .concurrency import log_tool_call, serialized
-from .rendering import render_kv, tool_result
+from .rendering import render_kv, render_table, tool_result
 
 
 @serialized
@@ -53,6 +54,25 @@ def load_binary(path: str) -> CallToolResult:
             meta = {"index": i, "path": view_path}
             return tool_result(render_kv(meta), meta)
     raise RuntimeError(f"opened {resolved!r} but it isn't showing up in program://binaries yet")
+
+
+@serialized
+def save_all() -> CallToolResult:
+    """Save every open binary's analysis database. Binaries not yet backed
+    by a .bndb get one created next to the original file (path + ".bndb");
+    binaries that already have one get a snapshot saved to it."""
+    saved = []
+    for bv, path in binary_context.list_available_views():
+        if bv.file.has_database:
+            dest = bv.file.filename
+            ok = bv.save_auto_snapshot()
+        else:
+            dest = f"{path}.bndb"
+            ok = bv.create_database(dest)
+        saved.append({"path": path, "database": dest, "saved": bool(ok)})
+    meta = {"saved": saved}
+    text = render_table(saved, fields=["path", "database", "saved"])
+    return tool_result(text, meta)
 
 
 def _program_binaries() -> dict:
@@ -97,6 +117,7 @@ def _program_plugins() -> dict:
 _TOOLS = (
     (select_binary, "select_binary"),
     (load_binary, "load_binary"),
+    (save_all, "save_all"),
 )
 
 

@@ -25,7 +25,11 @@ import argparse
 import http.client
 import json
 import os
+import shutil
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -33,6 +37,21 @@ _CONNECTION_FILE = Path.home() / ".cache" / "binja-mcp" / "server.json"
 _PROTOCOL_VERSION = "2025-06-18"
 _LIST_KINDS = ("functions", "symbols", "types", "sections", "imports", "exports", "strings")
 _IL_LEVELS = ("disassembly", "llil", "mlil", "hlil", "llil_ssa", "mlil_ssa", "hlil_ssa")
+
+# Common per-OS install locations, checked after PATH and before giving up --
+# there's no single canonical install dir the way there is for most CLI
+# tools, since BN ships as a GUI app extracted/installed wherever the user
+# put it. `--path`/BN_PATH always wins over all of this (see
+# find_bn_executable).
+_DEFAULT_BN_PATHS = (
+    Path.home() / "binaryninja" / "binaryninja",
+    Path.home() / "tools" / "binaryninja" / "binaryninja",
+    Path("/opt/binaryninja/binaryninja"),
+    Path("/Applications/Binary Ninja.app/Contents/MacOS/binaryninja"),
+    Path(os.environ.get("PROGRAMFILES", "")) / "Vector35" / "BinaryNinja" / "binaryninja.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Vector35" / "BinaryNinja" / "binaryninja.exe",
+)
+_DEFAULT_CLOSE_TIMEOUT = 15.0
 
 
 class BnError(Exception):
@@ -44,6 +63,45 @@ def _connection_file_data():
         return json.loads(_CONNECTION_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """POSIX existence check (signal 0 sends nothing, just probes). A pid
+    owned by another user still counts as alive -- PermissionError means it
+    exists, just isn't ours to signal."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def find_bn_executable(explicit) -> Path:
+    """Resolve the Binary Ninja executable for `instance start`/`restart`,
+    highest priority first: --path, BN_PATH, PATH, then a handful of common
+    per-OS install locations (see _DEFAULT_BN_PATHS) -- there's no one
+    canonical install dir to assume, since BN is a GUI app extracted or
+    installed wherever the user put it."""
+    candidate = explicit or os.environ.get("BN_PATH")
+    if candidate:
+        p = Path(candidate).expanduser()
+        if p.is_file():
+            return p
+        raise BnError(f"no Binary Ninja executable at {p}")
+    which = shutil.which("binaryninja")
+    if which:
+        return Path(which)
+    for p in _DEFAULT_BN_PATHS:
+        if str(p) and p.is_file():
+            return p
+    raise BnError(
+        "could not find the Binary Ninja executable -- pass --path, set BN_PATH, "
+        "or put `binaryninja` on PATH"
+    )
 
 
 def resolve_connection(args):
@@ -235,6 +293,81 @@ def cmd_select(conn: Connection, args) -> None:
     emit(conn.call_tool("select_binary", {"index": args.index}), args.format)
 
 
+def cmd_save_all(conn: Connection, args) -> None:
+    emit(conn.call_tool("save_all", {}), args.format)
+
+
+# -- instance lifecycle (no MCP server required -- local process control) --
+#
+# Deliberately outside the MCP client path: `start` has to work *before* any
+# server exists, and `close` is a signal sent to a local pid, not a tool
+# call. Both read/write the same connection file the running server itself
+# writes on start/stop (see connection_file.py) as the source of truth for
+# "is an instance running, and which pid is it" -- inherently local-machine
+# only, same as that file's own zero-config design.
+
+
+def cmd_instance_start(args) -> None:
+    exe = find_bn_executable(args.path)
+    try:
+        proc = subprocess.Popen(
+            [str(exe)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        raise BnError(f"failed to launch {exe}: {e}") from e
+    time.sleep(1.0)
+    if proc.poll() is not None:
+        raise BnError(f"{exe} exited immediately (code {proc.returncode}) -- check BN's own logs")
+    print(f"started Binary Ninja (pid {proc.pid}) from {exe}")
+
+
+def cmd_instance_close(args) -> None:
+    data = _connection_file_data()
+    pid = data.get("pid") if data else None
+    if pid is None:
+        raise BnError("no running instance found (no local connection file)")
+    if not _pid_alive(pid):
+        print(f"instance (pid {pid}) is already not running")
+        _CONNECTION_FILE.unlink(missing_ok=True)
+        return
+
+    timeout = args.timeout if args.timeout is not None else _DEFAULT_CLOSE_TIMEOUT
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            print(f"closed Binary Ninja (pid {pid})")
+            _CONNECTION_FILE.unlink(missing_ok=True)
+            return
+        time.sleep(0.5)
+
+    os.kill(pid, signal.SIGKILL)
+    time.sleep(0.5)
+    if _pid_alive(pid):
+        raise BnError(f"Binary Ninja (pid {pid}) is still running after SIGKILL")
+    print(f"Binary Ninja (pid {pid}) didn't exit within {timeout:.0f}s of SIGTERM -- force-killed")
+    _CONNECTION_FILE.unlink(missing_ok=True)
+
+
+def cmd_instance_restart(args) -> None:
+    try:
+        cmd_instance_close(args)
+    except BnError as e:
+        print(f"(nothing to close: {e})")
+    cmd_instance_start(args)
+
+
+_INSTANCE_LOCAL_COMMANDS = {
+    "start": cmd_instance_start,
+    "close": cmd_instance_close,
+    "restart": cmd_instance_restart,
+}
+
+
 # -- writing.py (safe write; needs mcp_server.write_enabled) ----------------
 
 
@@ -344,6 +477,16 @@ def cmd_list_snippets(conn: Connection, args) -> None:
 
 
 def cmd_health(args) -> int:
+    print("instance:")
+    data = _connection_file_data()
+    pid = data.get("pid") if data else None
+    if pid is None:
+        print("  process: unknown -- no local connection file (remote server, or not started via `bn instance start`)")
+    elif _pid_alive(pid):
+        print(f"  process: running (pid {pid})")
+    else:
+        print(f"  process: not running -- stale pid {pid} in connection file (`bn instance close` to clean it up)")
+
     print("connection:")
     try:
         host, port, api_key = resolve_connection(args)
@@ -426,6 +569,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_select.add_argument("index", type=int, help="Index into program://binaries")
 
     sub.add_parser("health", parents=[common], help="Check connectivity, auth, and which commands are enabled")
+
+    # -- instance lifecycle (local process control, no MCP server needed for
+    # start/close/restart; save-all is a real tool call) --------------------
+    p_instance = sub.add_parser("instance", help="Start, close, or manage the Binary Ninja application itself")
+    instance_sub = p_instance.add_subparsers(dest="instance_command", required=True)
+
+    p_inst_start = instance_sub.add_parser("start", help="Launch the Binary Ninja application")
+    p_inst_start.add_argument(
+        "--path", default=None, help="Path to the binaryninja executable (default: PATH, BN_PATH, or common install locations)"
+    )
+
+    p_inst_close = instance_sub.add_parser("close", help="Close the running Binary Ninja application")
+    p_inst_close.add_argument(
+        "--timeout", type=float, default=None, help=f"Seconds to wait after SIGTERM before SIGKILL (default: {_DEFAULT_CLOSE_TIMEOUT:.0f})"
+    )
+
+    p_inst_restart = instance_sub.add_parser(
+        "restart", help="Close, then start, the Binary Ninja application -- e.g. to reload plugin changes"
+    )
+    p_inst_restart.add_argument(
+        "--path", default=None, help="Path to the binaryninja executable (default: PATH, BN_PATH, or common install locations)"
+    )
+    p_inst_restart.add_argument(
+        "--timeout", type=float, default=None, help=f"Seconds to wait after SIGTERM before SIGKILL (default: {_DEFAULT_CLOSE_TIMEOUT:.0f})"
+    )
+
+    instance_sub.add_parser("save-all", parents=[global_only], help="Save every open binary's analysis database")
 
     # -- writing.py (needs mcp_server.write_enabled, default on) ------------
     p_rf = sub.add_parser("rename-function", parents=[common], help="Rename a function")
@@ -530,7 +700,18 @@ def main(argv=None) -> int:
     if args.command == "health":
         return cmd_health(args)
 
-    handler = _BINARY_SCOPED_COMMANDS.get(args.command) or _GLOBAL_COMMANDS.get(args.command)
+    if args.command == "instance" and args.instance_command in _INSTANCE_LOCAL_COMMANDS:
+        try:
+            _INSTANCE_LOCAL_COMMANDS[args.instance_command](args)
+            return 0
+        except BnError as e:
+            print(f"bn: error: {e}", file=sys.stderr)
+            return 1
+
+    if args.command == "instance":  # only save-all left, a real tool call
+        handler = cmd_save_all
+    else:
+        handler = _BINARY_SCOPED_COMMANDS.get(args.command) or _GLOBAL_COMMANDS.get(args.command)
 
     try:
         host, port, api_key = resolve_connection(args)
