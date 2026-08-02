@@ -86,7 +86,19 @@ def _program_binaries() -> dict:
 
 
 def _binary_selected() -> dict:
-    bv = binary_context.get_current_view()
+    # "Nothing open/selected yet" is normal state for this resource, not a
+    # failure -- letting NoBinaryOpenError propagate makes FastMCP's
+    # read_resource() log a full ERROR-level traceback (it unconditionally
+    # logger.exception()s any exception a resource raises) on every read
+    # while BN has no binary open, e.g. every `bn` CLI call's
+    # ensure_binary_target() pre-flight check. Tools that actually need a
+    # BinaryView to operate on still get a real error from
+    # get_current_view() itself -- this only softens the read-only status
+    # resource.
+    try:
+        bv = binary_context.get_current_view()
+    except binary_context.NoBinaryOpenError:
+        return {"path": None, "explicitly_selected": False, "arch": None, "view_type": None}
     is_explicit = binary_context.get_selected_view() is not None
     return {
         "path": bv.file.filename,
