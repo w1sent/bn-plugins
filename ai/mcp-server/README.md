@@ -225,6 +225,16 @@ scripting, debugging PIE binaries, ...). MCP itself has no skill-registration
 primitive (only tools/resources/prompts), so this is a plain file copy, not
 something registered over the protocol; pass `--no-skill` to skip it.
 
+`pi` (https://pi.dev) isn't in `--clients` -- it has no built-in MCP support
+(see ADR-0038) -- but the installer still targets it independently: it
+installs `skills/binja-cli/SKILL.md` into `~/.agents/skills/binja-cli`, one
+of pi's global skill-discovery paths, alongside the `bn` CLI symlink below
+that pi actually calls. Pass `--pi-skill-dest` to change the destination
+(e.g. to a project-local `.agents/skills/binja-cli` so pi picks it up only
+for that project) or `--no-pi-skill` to skip it. The MCP-only `binja-mcp`
+skill is deliberately not installed there, for the same no-MCP-support
+reason.
+
 To configure a client manually: the server listens at
 `http://<bind_address>:<http_port>/mcp` (defaults to
 `http://127.0.0.1:9090/mcp`); get the current API key via Plugins → MCP

@@ -24,6 +24,15 @@ ADR-0038), this also symlinks the bundled `bn` CLI onto PATH (see
 repo as the CLI evolves, same reasoning as install.py's --link mode for
 the plugin itself.
 
+`pi` (https://pi.dev) is deliberately not in --clients: per ADR-0038, pi has
+no built-in MCP support, so there's nothing to register it as an MCP client
+for. What pi *can* use is the `bn` CLI above plus its own Skill (the
+harness-agnostic front end ADR-0038 designed specifically with pi in mind),
+so this also installs the bundled binja-cli skill (skills/binja-cli/SKILL.md)
+into pi's skill discovery path (see --pi-skill-dest, --no-pi-skill) --
+independent of --clients, same as --cli-dest above. The binja-mcp skill is
+*not* installed there for the same no-MCP-support reason.
+
 Usage:
     python install_mcp_clients.py --api-key KEY
     python install_mcp_clients.py --api-key KEY --clients claude-code,opencode
@@ -45,7 +54,9 @@ _DEFAULT_URL = "http://127.0.0.1:9090/mcp"
 _DEFAULT_NAME = "binja-mcp"
 _ALL_CLIENTS = ("claude-code", "codex", "opencode", "deepagents")
 _SKILL_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-mcp" / "SKILL.md"
+_CLI_SKILL_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-cli" / "SKILL.md"
 _CLI_SRC = Path(__file__).resolve().parent.parent / "skills" / "binja-cli" / "scripts" / "bn"
+_DEFAULT_PI_SKILL_DEST = Path.home() / ".agents" / "skills" / "binja-cli"
 
 
 class Result:
@@ -197,19 +208,20 @@ def configure_deepagents(name: str, url: str, api_key: str, config_path: Path, d
     )
 
 
-def install_skill(dest_dir: Path, dry_run: bool) -> Result:
-    """Claude Code skills have no MCP-level registration mechanism (the MCP
-    protocol only has tools/resources/prompts) -- so this just copies the
-    bundled SKILL.md into Claude Code's user-level skills directory, the same
-    way a human would install a skill by hand."""
-    if not _SKILL_SRC.exists():
-        return Result("claude-code-skill", "error", f"bundled skill not found at {_SKILL_SRC}")
+def install_skill(src: Path, dest_dir: Path, dry_run: bool, label: str) -> Result:
+    """Neither MCP nor pi has a registration mechanism for Skills (MCP's
+    protocol only has tools/resources/prompts; pi discovers them by walking
+    fixed directories -- see module docstring) -- so this just copies the
+    bundled SKILL.md into the target's skills directory, the same way a
+    human would install a skill by hand."""
+    if not src.exists():
+        return Result(label, "error", f"bundled skill not found at {src}")
     dest = dest_dir / "SKILL.md"
     if dry_run:
-        return Result("claude-code-skill", "ok", f"[dry-run] would copy {_SKILL_SRC} -> {dest}")
+        return Result(label, "ok", f"[dry-run] would copy {src} -> {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(_SKILL_SRC, dest)
-    return Result("claude-code-skill", "ok", f"installed skill to {dest}")
+    shutil.copyfile(src, dest)
+    return Result(label, "ok", f"installed skill to {dest}")
 
 
 def install_cli(dest_dir: Path, dry_run: bool) -> Result:
@@ -267,6 +279,17 @@ def main() -> int:
         "--no-skill", action="store_true", help="Don't install the binja-mcp Claude Code skill"
     )
     parser.add_argument(
+        "--pi-skill-dest",
+        default=str(_DEFAULT_PI_SKILL_DEST),
+        help=(
+            "Where to install the binja-cli skill for pi (default: "
+            f"{_DEFAULT_PI_SKILL_DEST}, one of pi's global skill-discovery paths)"
+        ),
+    )
+    parser.add_argument(
+        "--no-pi-skill", action="store_true", help="Don't install the binja-cli skill for pi"
+    )
+    parser.add_argument(
         "--cli-dest",
         default=str(Path.home() / ".local" / "bin"),
         help="Where to symlink the bn CLI (default: ~/.local/bin)",
@@ -297,7 +320,9 @@ def main() -> int:
             configure_deepagents(args.name, args.url, api_key, Path(args.deepagents_config), args.dry_run)
         )
     if "claude-code" in clients and not args.no_skill:
-        results.append(install_skill(Path(args.skill_dest), args.dry_run))
+        results.append(install_skill(_SKILL_SRC, Path(args.skill_dest), args.dry_run, "claude-code-skill"))
+    if not args.no_pi_skill:
+        results.append(install_skill(_CLI_SKILL_SRC, Path(args.pi_skill_dest), args.dry_run, "pi-skill"))
     if not args.no_cli:
         results.append(install_cli(Path(args.cli_dest), args.dry_run))
 
