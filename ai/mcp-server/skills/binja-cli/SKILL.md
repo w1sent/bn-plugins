@@ -48,6 +48,11 @@ columns; `--limit`/`--offset` page through the *filtered* set.
 **Understand one function.** `bn function <name-or-addr>` for disassembly;
 `--il-level hlil` (or `mlil`/`llil`/`*_ssa`) for IL instead.
 
+**Dump raw bytes.** `bn hex <addr> <length>` reads bytes at an address --
+`--format text` (the CLI's `--format json` default won't render as nicely)
+shows a classic offset/hex/ASCII view; `--format json` just gives the plain
+hex string.
+
 **Multiple binaries open.** `bn select <index>` pins which binary
 subsequent calls target, persisting server-side until changed. Without an
 explicit selection, calls default to index 0 rather than whatever's
