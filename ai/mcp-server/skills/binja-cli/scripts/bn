@@ -619,6 +619,66 @@ def cmd_job_wait(conn: Connection, args) -> None:
     _wait_for_job(conn, args.job_id, args.interval, args.timeout, args.format)
 
 
+# -- administration.py analysis control (always registered) ----------------
+#
+# Unlike execute-script/load-script/run-snippet, there's no job_id here:
+# BN's own update_analysis() is already asynchronous on BN's own worker
+# threads once triggered, and analysis_status (BinaryView.analysis_progress)
+# is a native poll target scoped to "the current binary", not to a
+# particular call -- so --wait polls that directly instead of a job
+# registry, and it works the same whether or not this process was the one
+# that triggered the analysis.
+
+
+def _wait_for_analysis(conn: Connection, interval: float, timeout, fmt: str) -> None:
+    deadline = time.monotonic() + timeout if timeout else None
+    try:
+        while True:
+            result = conn.call_tool("analysis_status", {})
+            if (result.get("structuredContent") or {}).get("done"):
+                emit(result, fmt)
+                return
+            if deadline is not None and time.monotonic() >= deadline:
+                raise BnError(f"analysis still running after {timeout:.0f}s -- check again with `bn analysis-status`")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(
+            "\nbn: detached -- analysis keeps running server-side; check again with `bn analysis-status`",
+            file=sys.stderr,
+        )
+        raise SystemExit(130)
+
+
+def cmd_analyze(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    async_run = args.async_run or args.wait
+    if not async_run:
+        conn.set_timeout(args.timeout)
+    try:
+        result = conn.call_tool("reanalyze", {"wait": not async_run})
+    except BnError as e:
+        if not async_run and "timed out" in str(e):
+            raise BnError(
+                f"{e} -- analysis exceeded --timeout={args.timeout:.0f}s while running synchronously "
+                "(sync mode holds the server's global lock the whole time, so other tool calls were "
+                "blocked too, not just this one). Rerun with --async or --wait, or pass a larger --timeout."
+            ) from e
+        raise
+    if not args.wait:
+        emit(result, args.format)
+        return
+    print("analysis running, waiting (Ctrl-C to detach without stopping it)...", file=sys.stderr)
+    _wait_for_analysis(conn, args.interval, None, args.format)
+
+
+def cmd_analysis_status(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    if args.wait:
+        _wait_for_analysis(conn, args.interval, args.timeout, args.format)
+    else:
+        emit(conn.call_tool("analysis_status", {}), args.format)
+
+
 def cmd_health(args) -> int:
     print("instance:")
     data = _connection_file_data()
@@ -692,19 +752,21 @@ def build_parser() -> argparse.ArgumentParser:
     global_only.add_argument("--api-key", help="API key (default: local connection file, or none if auth is disabled)")
     global_only.add_argument("--format", choices=["text", "json"], default="json", help="Output format (default: json)")
 
-    # Shared by execute-script/load-script/run-snippet -- see the big
-    # comment above _wait_for_job for what sync/--async/--wait each mean.
-    script_run_opts = argparse.ArgumentParser(add_help=False)
-    script_run_opts.add_argument(
-        "--async", dest="async_run", action="store_true", help="Return immediately with a job_id instead of blocking"
+    # Shared by execute-script/load-script/run-snippet/analyze -- any
+    # command with a sync-by-default/--async/--wait split. See the big
+    # comment above _wait_for_job (script commands) or cmd_analyze
+    # (analyze) for what each mode means for that specific command.
+    long_running_opts = argparse.ArgumentParser(add_help=False)
+    long_running_opts.add_argument(
+        "--async", dest="async_run", action="store_true", help="Return immediately instead of blocking"
     )
-    script_run_opts.add_argument(
+    long_running_opts.add_argument(
         "--wait", action="store_true", help="Run async, then poll until it finishes (Ctrl-C detaches without stopping it)"
     )
-    script_run_opts.add_argument(
+    long_running_opts.add_argument(
         "--interval", type=float, default=_DEFAULT_POLL_INTERVAL, help=f"Seconds between polls with --wait (default: {_DEFAULT_POLL_INTERVAL:g})"
     )
-    script_run_opts.add_argument(
+    long_running_opts.add_argument(
         "--timeout",
         type=float,
         default=_DEFAULT_SCRIPT_TIMEOUT,
@@ -832,7 +894,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-snippets", parents=[global_only], help="List snippets in BN's Snippet Manager")
 
     p_es = sub.add_parser(
-        "execute-script", parents=[common, script_run_opts], help="Execute a Python script inside the running BN process"
+        "execute-script", parents=[common, long_running_opts], help="Execute a Python script inside the running BN process"
     )
     p_es.add_argument(
         "script",
@@ -841,13 +903,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_ls = sub.add_parser(
-        "load-script", parents=[common, script_run_opts], help="Load and execute a Python script file (same semantics as execute-script)"
+        "load-script", parents=[common, long_running_opts], help="Load and execute a Python script file (same semantics as execute-script)"
     )
     p_ls.add_argument("path")
 
     p_rsn = sub.add_parser(
         "run-snippet",
-        parents=[common, script_run_opts],
+        parents=[common, long_running_opts],
         help="Run a snippet from BN's Snippet Manager by name (same semantics as execute-script)",
     )
     p_rsn.add_argument("name")
@@ -866,6 +928,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_job_wait.add_argument("job_id")
     p_job_wait.add_argument("--interval", type=float, default=_DEFAULT_POLL_INTERVAL, help=f"Seconds between polls (default: {_DEFAULT_POLL_INTERVAL:g})")
     p_job_wait.add_argument("--timeout", type=float, default=None, help="Give up after this many seconds (default: wait forever)")
+
+    # -- administration.py analysis control (always registered) -------------
+    sub.add_parser(
+        "analyze", parents=[common, long_running_opts], help="Trigger a full re-analysis of the current binary"
+    )
+
+    p_astat = sub.add_parser("analysis-status", parents=[common], help="Check the current binary's analysis progress")
+    p_astat.add_argument("--wait", action="store_true", help="Poll until analysis finishes instead of a single check")
+    p_astat.add_argument("--interval", type=float, default=_DEFAULT_POLL_INTERVAL, help=f"Seconds between polls with --wait (default: {_DEFAULT_POLL_INTERVAL:g})")
+    p_astat.add_argument("--timeout", type=float, default=None, help="Give up after this many seconds (default: wait forever); ignored without --wait")
 
     return parser
 
@@ -889,6 +961,8 @@ _BINARY_SCOPED_COMMANDS = {
     "execute-script": cmd_execute_script,
     "load-script": cmd_load_script,
     "run-snippet": cmd_run_snippet,
+    "analyze": cmd_analyze,
+    "analysis-status": cmd_analysis_status,
 }
 
 _GLOBAL_COMMANDS = {

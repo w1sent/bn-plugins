@@ -1,4 +1,5 @@
-"""Administration tools: multi-binary selection (see TODO.md phase 6).
+"""Administration tools: multi-binary selection (see TODO.md phase 6),
+plus analysis control (reanalyze/analysis_status).
 
 `select_binary`/`load_binary` set an explicit selection in binary_context,
 which every read/write tool's `get_current_view()` call then prefers over
@@ -6,11 +7,19 @@ the GUI's currently-focused tab (Phase 3's original fallback behavior).
 `save_all` is unrelated to selection -- it saves every open binary, not
 just the current one. Always registered -- there's no gating setting for
 administration, same as the read tools.
+
+`reanalyze`/`analysis_status` need no job registry the way scripting.py's
+async execute_script does: BN's own `update_analysis()` is already
+asynchronous on BN's own background worker threads once triggered, and
+`BinaryView.analysis_progress` is a native, already-existing poll target --
+there's no arbitrary long-running Python code here that needs a thread of
+ours to escape the tool-call lock.
 """
 
 from pathlib import Path
 
 import binaryninja
+from binaryninja.enums import AnalysisState
 from mcp.types import CallToolResult
 
 from . import binary_context
@@ -75,6 +84,41 @@ def save_all() -> CallToolResult:
     return tool_result(text, meta)
 
 
+@serialized
+def reanalyze(wait: bool = True) -> CallToolResult:
+    """Trigger a full re-analysis of the current binary (same as BN's GUI
+    "Reanalyze"): every function is reprocessed from scratch, catching code
+    a patch or other change revealed that BN's own incremental analysis
+    wouldn't otherwise pick up on its own.
+
+    Defaults to blocking until analysis finishes -- matching the server's
+    normal serialized execution (other tool calls wait too), which can be a
+    while on a large binary, so pass wait=False to instead trigger analysis
+    on BN's own background worker threads and return immediately. Poll
+    analysis_status() for progress either way."""
+    bv = binary_context.get_current_view()
+    bv.reanalyze()
+    if wait:
+        bv.update_analysis_and_wait()
+    else:
+        bv.update_analysis()
+    progress = bv.analysis_progress
+    meta = {"path": bv.file.filename, "waited": wait, "state": progress.state.name}
+    return tool_result(render_kv(meta), meta)
+
+
+@serialized
+def analysis_status() -> CallToolResult:
+    """Report the current binary's analysis progress -- state/count/total
+    from BN's own AnalysisProgress -- e.g. to poll after
+    reanalyze(wait=False)."""
+    bv = binary_context.get_current_view()
+    progress = bv.analysis_progress
+    done = progress.state in (AnalysisState.IdleState, AnalysisState.HoldState)
+    meta = {"state": progress.state.name, "count": progress.count, "total": progress.total, "done": done}
+    return tool_result(render_kv(meta), meta)
+
+
 def _program_binaries() -> dict:
     views = binary_context.list_available_views()
     selected = binary_context.get_selected_view()
@@ -130,6 +174,8 @@ _TOOLS = (
     (select_binary, "select_binary"),
     (load_binary, "load_binary"),
     (save_all, "save_all"),
+    (reanalyze, "reanalyze"),
+    (analysis_status, "analysis_status"),
 )
 
 

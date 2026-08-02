@@ -282,6 +282,35 @@ it's a thin client over that existing split, plus one CLI-only convenience:
 dispatch in the CLI) since they're the same server-side execution path
 sourced from a file or a saved snippet instead of literal script text.
 
+## Update: `bn analyze` / `bn analysis-status`
+
+New server-side surface this time (unlike script execution above, nothing
+to wrap already existed): `reanalyze(wait: bool)` and `analysis_status()`
+tools in `administration.py`, backing `bn analyze` (sync-default/`--async`/
+`--wait`, same flag shape as `execute-script`) and `bn analysis-status
+[--wait]`.
+
+The polling design is simpler than script execution's job-control, and
+deliberately doesn't reuse it: BN's own `update_analysis()` is *already*
+asynchronous on BN's own background worker threads once triggered, and
+`BinaryView.analysis_progress` is a native, already-existing status read —
+there's no arbitrary long-running Python code here that needs a thread of
+ours to escape the tool-call lock, so no job registry/`job_id` is needed
+either. `reanalyze` targets "the current binary" (via the usual
+`--binary`/`ensure_binary_target` resolution), not a call-scoped handle:
+`bn analysis-status --wait` polls the same way whether or not the process
+polling it is the one that triggered the analysis.
+
+`reanalyze(wait=True)` is `@serialized` like every other tool, holding the
+server's global lock for the full `update_analysis_and_wait()` duration —
+consistent with sync `execute_script`'s "sync blocks everything, that's the
+point of `--async`/`--wait`" behavior, not a special case. `wait=False`
+uses the same decorator but the function body only calls
+`bv.update_analysis()` (non-blocking, returns near-instantly once BN's own
+worker pool picks the work up), so the lock is barely held at all in that
+path — true async falls out of BN's own API shape rather than needing a
+Python thread of our own.
+
 ## Considered and rejected
 
 - **Native pi TypeScript Extension as the primary interface** — rejected as

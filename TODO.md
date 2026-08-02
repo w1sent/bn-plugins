@@ -1,11 +1,5 @@
 # TODO
 
-## High priority
-
-### `bn analyze` / `bn instance reanalyze`
-Add a `bn` subcommand to trigger full analysis on a loaded binary (e.g. after `load-binary` or a
-patch) without going back to BN's GUI or an MCP tool call.
-
 ## Custom RE agent harness
 Build a custom agent harness optimized for reverse engineering, including both a CLI and a Binary
 Ninja frontend.

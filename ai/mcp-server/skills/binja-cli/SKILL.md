@@ -67,6 +67,14 @@ rerouted to **stderr**, not stdout -- informational, safe to ignore, and it
 won't show up in anything you pipe from stdout. Comes from
 `mcp_server.echo_target_enabled` (default on).
 
+**Trigger re-analysis.** `bn analyze` reprocesses every function from
+scratch (same as BN's GUI "Reanalyze") -- useful after `bn load-binary` or
+a patch reveals code BN's own incremental analysis wouldn't otherwise catch.
+Same sync-default/`--async`/`--wait` split as script execution above (no
+`job_id` here though -- `--wait`/`bn analysis-status [--wait]` just poll
+BN's own native analysis progress for the current binary, which works
+regardless of which process triggered it).
+
 **Document findings.** `bn rename-function <addr> <name>` / `bn
 rename-symbol <addr> <name>` once confident, `bn comment <addr> <text>` /
 `bn function-comment <addr> <text>` for reasoning, `bn create-struct
