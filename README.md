@@ -52,8 +52,10 @@ has only a `TODO.md` describing intended scope, no code yet.
 | [`node-canvas`](ux/node-canvas/README.md) | A user-curated, freeform graph workspace: hand-place and group nodes bound to BN addresses, auto-populate call trees and xref graphs, and persist/export/import the canvas alongside the binary. |
 | [`hex-visualizer`](ux/hex-visualizer/README.md) | A sidebar inspector panel driven by the hex/linear-view selection: media preview (with full-file carving from a partial selection) for image formats, plus a hex/ASCII/common-type data-inspector table. |
 
-`ux/diff`, `ux/frida`, and `ux/joern` are likewise planning-stage
-(`TODO.md` only).
+`ux/frida` and `ux/joern` are likewise planning-stage (`TODO.md` only).
+`ux/diff` was removed — see [ADR-0030](docs/adr/0030-diff-matching-and-ui-design.md)
+("superseded" note at the top) — since Binary Ninja 6.0 is planned to ship
+its own native diffing tool.
 
 ## Installing
 

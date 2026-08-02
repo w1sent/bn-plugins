@@ -1,9 +1,5 @@
 # TODO
 
-## Custom RE agent harness
-Build a custom agent harness optimized for reverse engineering, including both a CLI and a Binary
-Ninja frontend.
-
 ## Debug-time type application script
 Create a script that applies types during debugging by tracking memory locations from registers,
 including following pointers into objects.
@@ -24,12 +20,6 @@ of variables, basic blocks, functions, etc.
 `order_functions`, `zero_caller_roots`. Still missing: reachability, dominators, and clustering
 (for module-boundary detection) — add these incrementally, only when a concrete consumer needs
 them.
-
-## Hex-editor visualizer side panel
-Done -- see [`ux/hex-visualizer`](ux/hex-visualizer/README.md) and
-[ADR-0037](docs/adr/0037-hex-visualizer-inspector-panel.md). Remaining/deferred scope (video-frame
-decode for ISO-BMFF containers, struct/pattern overlays, additional carveable formats) tracked in
-`ux/hex-visualizer/TODO.md`.
 
 ## ADR discipline check
 Add an explicit check (or at least a habit/reminder) that significant design decisions — especially
@@ -52,12 +42,6 @@ Extend `ux/frida` into a two-way bridge instead of one-way script injection: str
 (hit addresses, argument values, pointer targets) from a running Frida-instrumented process back
 into BN as tags/comments/types live. Feeds directly into the debug-time type application and
 "automate debugging in Binja" TODOs — Frida becomes the runtime data source, BN the annotation sink.
-
-## Diff-driven re-analysis
-When `ux/diff` detects a changed function between two binary versions, auto-invalidate that
-function's cached AI context/evidence and re-run auto-rename/suggest-structs scoped to just that
-function (ties into the scoped-run TODO). Turns version diffing into incremental re-analysis instead
-of a one-shot comparison view.
 
 ## Dataflow-backed struct suggestion
 Once the Joern adapter (see "Surface Joern integration in core") exists, have `ai/suggest-structs`
@@ -98,12 +82,6 @@ Cluster the call graph (via the graph-analysis QoL API TODO) to infer likely sub
 (e.g. "this cluster of 40 functions is the crypto module") from connectivity alone, then have the AI
 enhancer name the cluster instead of only individual functions — gives a map of the binary's
 structure before anything has been manually named.
-
-## 1-day/patch-diff assist
-Given two versions of a binary (patched vs unpatched) and matched functions from `ux/diff`, have the
-AI summarize what changed *semantically* in each modified function (e.g. "added a bounds check
-before this write") rather than just showing a raw decompiler diff — speeds up vuln-patch analysis
-specifically.
 
 ## Auto-generated analyst handoff/break report
 Add a command that walks a binary's accumulated evidence (framework detection, named clusters, AI

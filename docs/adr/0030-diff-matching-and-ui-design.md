@@ -1,5 +1,13 @@
 # diff: exact-hash pre-pass + WL-style CFG scoring, BN-widget-reuse UI
 
+**Status: superseded, 2026-08-02.** `ux/diff` was removed (never got past
+the design/`TODO.md` stage — no code existed) because Binary Ninja 6.0 is
+planned to ship its own native diffing tool, making a custom-built one
+redundant. Left in place as a record of the matching-pipeline design work
+in case a future gap between BN's native tool and this repo's needs (e.g.
+tighter integration with `core`'s evidence store, or the AI plugins) makes
+some of this reasoning worth revisiting.
+
 `ux/diff` is scoped to patch diffing first (same binary, one version apart) —
 not malware-family clustering or cross-toolchain firmware comparison. Those
 have very different similarity characteristics (heavier reliance on fuzzy
