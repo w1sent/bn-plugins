@@ -243,6 +243,45 @@ BN session (not just unit tests) surfaced the actual gaps:
   CLI's JSON output actually comes from, and `format` is still not an MCP
   tool parameter.
 
+## Update: `execute_script`/`load_script`/`run_snippet` CLI coverage
+
+The previous update left script *execution* uncovered pending a
+session/polling design (debugger control is still uncovered — see that
+section above). The server side already had everything needed: `async_run`
+on `execute_script`/`load_script`/`run_snippet` picks sync (blocks under the
+server's global tool-call lock, matching a plain request/response) vs. async
+(runs on its own thread, returns a `job_id` for `get_script_status`/
+`cancel_script` to poll/cancel). The CLI adds no new server-side surface —
+it's a thin client over that existing split, plus one CLI-only convenience:
+
+- **Sync stays the default** — one HTTP request held open until the script
+  finishes, fitting the same one-call-per-process shape as every other
+  command. The connection's normal ~30s socket timeout is bumped to a
+  `--timeout` flag (default 300s) for this case specifically, since a
+  script can legitimately run far longer than any other tool call; hitting
+  that timeout raises a clean error naming `--async`/`--wait` as the way
+  out (the script itself keeps running server-side either way — sync mode
+  doesn't cancel on a client-side timeout, it just stops waiting).
+- **`--async` is fire-and-forget** — prints the `job_id` and exits
+  immediately, mirroring the MCP tool's own `async_run=True` shape exactly.
+- **`--wait` is a CLI-only addition, not a new server capability** — runs
+  async under the hood, then polls `get_script_status` client-side every
+  `--interval` seconds until it finishes. The reason it's worth adding
+  despite being "just" repeated polling: Ctrl-C during `--wait` detaches
+  cleanly (the job keeps running server-side, reattach later with `bn job
+  wait <job_id>`) instead of the blunt "kill the socket" a plain Ctrl-C
+  gives you in sync mode. Same rationale as `screenshot` writing a PNG file
+  client-side — a legitimate CLI-side convenience layered on an unchanged
+  tool call, not a second implementation of the underlying behavior.
+- **`bn job status`/`bn job wait`/`bn job cancel`** thinly wrap
+  `get_script_status`/(the `--wait` loop)/`cancel_script`, grouped the same
+  way `bn instance <cmd>` groups local process control — a natural fit
+  since all three take the same `job_id` produced by `--async`.
+
+`load-script`/`run-snippet` share this exact design (same `_run_script_like`
+dispatch in the CLI) since they're the same server-side execution path
+sourced from a file or a saved snippet instead of literal script text.
+
 ## Considered and rejected
 
 - **Native pi TypeScript Extension as the primary interface** — rejected as

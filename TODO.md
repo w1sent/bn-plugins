@@ -1,5 +1,16 @@
 # TODO
 
+## High priority
+
+### `bn analyze` / `bn instance reanalyze`
+Add a `bn` subcommand to trigger full analysis on a loaded binary (e.g. after `load-binary` or a
+patch) without going back to BN's GUI or an MCP tool call.
+
+### `bn hex <addr> <length>`
+Add a `bn` subcommand to dump raw bytes at an address without leaving the CLI — today the closest
+equivalent is `bn function`/`get_data` over MCP, or `bn screenshot`, neither of which is a quick
+raw-byte dump.
+
 ## Custom RE agent harness
 Build a custom agent harness optimized for reverse engineering, including both a CLI and a Binary
 Ninja frontend.

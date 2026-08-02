@@ -86,17 +86,31 @@ Ninja's own Python API; `bn read-logs` reads BN's log console; `bn
 create-snippet <name> <script>` / `bn list-snippets` manage BN's Snippet
 Manager -- needs `scripting_enabled`.
 
+**Run a script.** `bn execute-script <script>` (for multi-line scripts use
+`$(cat file.py)` or shell quoting) runs arbitrary Python inside BN, with
+`bv` (the current binary view) and `should_cancel()` in scope; `bn
+load-script <path>` and `bn run-snippet <name>` are the same thing sourced
+from a file or from BN's Snippet Manager -- needs `scripting_enabled`. All
+three default to synchronous (blocks until the script finishes, `--timeout`
+seconds max, default 300); pass `--async` to fire-and-forget and get back a
+`job_id` immediately, or `--wait` to run async but have this process poll
+until it finishes (Ctrl-C detaches without stopping the job -- it was never
+tied to this process). A synchronous script also holds BN's global tool-call
+lock for as long as it runs, blocking every other tool call meanwhile
+(server-side, same as over MCP) -- reach for `--async`/`--wait` for
+anything that isn't quick. `bn job status <job_id>` / `bn job wait
+<job_id>` / `bn job cancel <job_id>` check on, wait for, or request
+best-effort cancellation of a job started with `--async` (cancellation only
+takes effect if the script itself calls `should_cancel()`).
+
 ## What's not here
 
 Debugger control (`launch`, breakpoints, `step_into`/`step_over`, `resume`,
-`kill_process`, `restart`) and script/snippet *execution*
-(`execute_script`, `load_script`, `run_snippet`, plus their
-`get_script_status`/`cancel_script` job-control) aren't wrapped by this
-CLI -- both control a running process or execute arbitrary code, which
-needs session/state handling well beyond a stateless one-call-per-process
-CLI, and is deliberately out of scope for now (see ADR-0038's "Update"
-section). Use the MCP tools directly for those (see the `binja-mcp`
-skill), or `bn`'s connection info (`bn health`) with your own script.
-Cross-cutting name/string search across every kind at once is `search`
-over MCP; for one specific kind, `bn list <kind> --filter` is usually a
-better fit.
+`kill_process`, `restart`) isn't wrapped by this CLI -- it controls a
+running process across multiple calls, which needs session/state handling
+this CLI doesn't have yet (see ADR-0038's "Update" section; script
+execution got that treatment and is covered above, debugging hasn't yet).
+Use the MCP tools directly for it (see the `binja-mcp` skill), or `bn`'s
+connection info (`bn health`) with your own script. Cross-cutting
+name/string search across every kind at once is `search` over MCP; for one
+specific kind, `bn list <kind> --filter` is usually a better fit.

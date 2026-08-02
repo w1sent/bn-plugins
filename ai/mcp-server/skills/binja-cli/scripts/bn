@@ -52,6 +52,8 @@ _DEFAULT_BN_PATHS = (
     Path(os.environ.get("LOCALAPPDATA", "")) / "Vector35" / "BinaryNinja" / "binaryninja.exe",
 )
 _DEFAULT_CLOSE_TIMEOUT = 15.0
+_DEFAULT_SCRIPT_TIMEOUT = 300.0
+_DEFAULT_POLL_INTERVAL = 1.0
 
 
 class BnError(Exception):
@@ -213,6 +215,16 @@ class Connection:
 
     def list_tools(self):
         return self._call("tools/list").get("tools", [])
+
+    def set_timeout(self, seconds: float) -> None:
+        """Override this connection's socket timeout -- used for synchronous
+        execute-script/load-script/run-snippet calls, which may legitimately
+        run far longer than the ~30s every other tool call needs. Updates
+        both the live socket (already open from the initial handshake) and
+        the connection's own default, in case it ever reconnects."""
+        self._conn.timeout = seconds
+        if self._conn.sock is not None:
+            self._conn.sock.settimeout(seconds)
 
     def close(self):
         self._conn.close()
@@ -476,6 +488,104 @@ def cmd_list_snippets(conn: Connection, args) -> None:
     emit(conn.call_tool("list_snippets", {}), args.format)
 
 
+# -- scripting.py execution tools (needs mcp_server.scripting_enabled) ------
+#
+# execute_script/load_script/run_snippet all share one server-side sync/async
+# split (see scripting.py's execute_script docstring): sync holds the
+# server's global tool-call lock until the script finishes -- simple, but
+# blocks every other tool call for as long as the script runs, and (CLI-side)
+# holds this process's HTTP socket open for the same span. async_run=True
+# instead runs the script on its own thread immediately, returning a job_id
+# to poll via get_script_status/cancel_script.
+#
+# The CLI exposes that as three modes rather than picking one:
+#   (default) sync, with --timeout raising the connection's usual ~30s
+#     socket timeout to something scripts can plausibly need.
+#   --async   fire-and-forget: prints the job_id and exits immediately.
+#   --wait    --async under the hood, but this process then polls
+#     get_script_status locally every --interval seconds until it finishes
+#     -- Ctrl-C detaches cleanly (the job keeps running server-side; it was
+#     never tied to this process) instead of the blunt "kill the socket"
+#     behavior sync mode gets from a plain Ctrl-C.
+
+
+def _wait_for_job(conn: Connection, job_id: str, interval: float, timeout, fmt: str) -> None:
+    deadline = time.monotonic() + timeout if timeout else None
+    try:
+        while True:
+            result = conn.call_tool("get_script_status", {"job_id": job_id})
+            status = (result.get("structuredContent") or {}).get("status")
+            if status != "running":
+                emit(result, fmt)
+                return
+            if deadline is not None and time.monotonic() >= deadline:
+                raise BnError(
+                    f"job {job_id} still running after {timeout:.0f}s -- "
+                    f"reattach later with `bn job wait {job_id}`, or stop it with `bn job cancel {job_id}`"
+                )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(
+            f"\nbn: detached -- job {job_id} keeps running server-side; "
+            f"reattach with `bn job wait {job_id}`, or stop it with `bn job cancel {job_id}`",
+            file=sys.stderr,
+        )
+        raise SystemExit(130)
+
+
+def _run_script_like(conn: Connection, args, tool_name: str, arguments: dict) -> None:
+    async_run = args.async_run or args.wait
+    payload = dict(arguments, async_run=async_run)
+    if not async_run:
+        conn.set_timeout(args.timeout)
+    try:
+        result = conn.call_tool(tool_name, payload)
+    except BnError as e:
+        if not async_run and "timed out" in str(e):
+            raise BnError(
+                f"{e} -- script exceeded --timeout={args.timeout:.0f}s while running synchronously "
+                "(sync mode holds the server's global lock the whole time, so other tool calls were "
+                "blocked too, not just this one). Rerun with --async or --wait, or pass a larger --timeout."
+            ) from e
+        raise
+    if not args.wait:
+        emit(result, args.format)
+        return
+    job_id = (result.get("structuredContent") or {}).get("job_id")
+    if not job_id:
+        emit(result, args.format)  # shouldn't happen once async_run=True, but don't hide a surprise
+        return
+    print(f"job {job_id} running, waiting (Ctrl-C to detach without stopping it)...", file=sys.stderr)
+    _wait_for_job(conn, job_id, args.interval, None, args.format)
+
+
+def cmd_execute_script(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    _run_script_like(conn, args, "execute_script", {"script": args.script})
+
+
+def cmd_load_script(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    _run_script_like(conn, args, "load_script", {"path": args.path})
+
+
+def cmd_run_snippet(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    _run_script_like(conn, args, "run_snippet", {"name": args.name})
+
+
+def cmd_job_status(conn: Connection, args) -> None:
+    emit(conn.call_tool("get_script_status", {"job_id": args.job_id}), args.format)
+
+
+def cmd_job_cancel(conn: Connection, args) -> None:
+    emit(conn.call_tool("cancel_script", {"job_id": args.job_id}), args.format)
+
+
+def cmd_job_wait(conn: Connection, args) -> None:
+    _wait_for_job(conn, args.job_id, args.interval, args.timeout, args.format)
+
+
 def cmd_health(args) -> int:
     print("instance:")
     data = _connection_file_data()
@@ -548,6 +658,25 @@ def build_parser() -> argparse.ArgumentParser:
     global_only.add_argument("--server", help="MCP server base host[:port] (default: local connection file)")
     global_only.add_argument("--api-key", help="API key (default: local connection file, or none if auth is disabled)")
     global_only.add_argument("--format", choices=["text", "json"], default="json", help="Output format (default: json)")
+
+    # Shared by execute-script/load-script/run-snippet -- see the big
+    # comment above _wait_for_job for what sync/--async/--wait each mean.
+    script_run_opts = argparse.ArgumentParser(add_help=False)
+    script_run_opts.add_argument(
+        "--async", dest="async_run", action="store_true", help="Return immediately with a job_id instead of blocking"
+    )
+    script_run_opts.add_argument(
+        "--wait", action="store_true", help="Run async, then poll until it finishes (Ctrl-C detaches without stopping it)"
+    )
+    script_run_opts.add_argument(
+        "--interval", type=float, default=_DEFAULT_POLL_INTERVAL, help=f"Seconds between polls with --wait (default: {_DEFAULT_POLL_INTERVAL:g})"
+    )
+    script_run_opts.add_argument(
+        "--timeout",
+        type=float,
+        default=_DEFAULT_SCRIPT_TIMEOUT,
+        help=f"Sync-mode socket timeout in seconds (default: {_DEFAULT_SCRIPT_TIMEOUT:.0f}); ignored with --async/--wait",
+    )
 
     parser = argparse.ArgumentParser(prog="bn", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -665,6 +794,42 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list-snippets", parents=[global_only], help="List snippets in BN's Snippet Manager")
 
+    p_es = sub.add_parser(
+        "execute-script", parents=[common, script_run_opts], help="Execute a Python script inside the running BN process"
+    )
+    p_es.add_argument(
+        "script",
+        help="Script text; for multi-line scripts use $(cat file.py) or shell quoting. "
+        "Namespace includes `bv` (current binary view) and `should_cancel()`.",
+    )
+
+    p_ls = sub.add_parser(
+        "load-script", parents=[common, script_run_opts], help="Load and execute a Python script file (same semantics as execute-script)"
+    )
+    p_ls.add_argument("path")
+
+    p_rsn = sub.add_parser(
+        "run-snippet",
+        parents=[common, script_run_opts],
+        help="Run a snippet from BN's Snippet Manager by name (same semantics as execute-script)",
+    )
+    p_rsn.add_argument("name")
+
+    # -- scripting.py job control (needs mcp_server.scripting_enabled) ------
+    p_job = sub.add_parser("job", help="Check on, wait for, or cancel an async execute-script/load-script/run-snippet job")
+    job_sub = p_job.add_subparsers(dest="job_command", required=True)
+
+    p_job_status = job_sub.add_parser("status", parents=[global_only], help="Check an async job's status/result")
+    p_job_status.add_argument("job_id")
+
+    p_job_cancel = job_sub.add_parser("cancel", parents=[global_only], help="Request cancellation of a running async job (best-effort)")
+    p_job_cancel.add_argument("job_id")
+
+    p_job_wait = job_sub.add_parser("wait", parents=[global_only], help="Poll a running async job until it finishes")
+    p_job_wait.add_argument("job_id")
+    p_job_wait.add_argument("--interval", type=float, default=_DEFAULT_POLL_INTERVAL, help=f"Seconds between polls (default: {_DEFAULT_POLL_INTERVAL:g})")
+    p_job_wait.add_argument("--timeout", type=float, default=None, help="Give up after this many seconds (default: wait forever)")
+
     return parser
 
 
@@ -683,6 +848,9 @@ _BINARY_SCOPED_COMMANDS = {
     "patch-asm": cmd_patch_asm,
     "edit-hex": cmd_edit_hex,
     "undo": cmd_undo,
+    "execute-script": cmd_execute_script,
+    "load-script": cmd_load_script,
+    "run-snippet": cmd_run_snippet,
 }
 
 _GLOBAL_COMMANDS = {
@@ -691,6 +859,12 @@ _GLOBAL_COMMANDS = {
     "read-logs": cmd_read_logs,
     "create-snippet": cmd_create_snippet,
     "list-snippets": cmd_list_snippets,
+}
+
+_JOB_COMMANDS = {
+    "status": cmd_job_status,
+    "cancel": cmd_job_cancel,
+    "wait": cmd_job_wait,
 }
 
 
@@ -710,6 +884,8 @@ def main(argv=None) -> int:
 
     if args.command == "instance":  # only save-all left, a real tool call
         handler = cmd_save_all
+    elif args.command == "job":
+        handler = _JOB_COMMANDS[args.job_command]
     else:
         handler = _BINARY_SCOPED_COMMANDS.get(args.command) or _GLOBAL_COMMANDS.get(args.command)
 
