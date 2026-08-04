@@ -1,6 +1,6 @@
 ---
 name: binja-cli
-description: Use the `bn` CLI to read, annotate, and patch a live Binary Ninja session from a shell -- list functions/symbols/types/sections/imports/exports/strings, inspect a function's disassembly/IL, rename/comment/retype/patch, capture a screenshot, check server connectivity, and start/close/restart the Binary Ninja application itself -- whenever you have bash access and a `bn` command (or `scripts/bn` in this skill) instead of, or alongside, MCP tools. Use when reverse engineering a binary, hunting for specific functions/strings/imports, documenting findings, patching bytes, launching or relaunching Binary Ninja, or checking whether the MCP server and its commands are actually reachable.
+description: Use the `bn` CLI to read, annotate, and patch a live Binary Ninja session from a shell -- list functions/symbols/types/sections/imports/exports/strings, inspect a function's disassembly/IL, trace cross-references and search names/strings, look up a type's definition, rename/comment/retype/patch, capture a screenshot, check server connectivity, and start/close/restart the Binary Ninja application itself -- whenever you have bash access and a `bn` command (or `scripts/bn` in this skill) instead of, or alongside, MCP tools. Use when reverse engineering a binary, hunting for specific functions/strings/imports, tracing what calls or is called by an address, documenting findings, patching bytes, launching or relaunching Binary Ninja, or checking whether the MCP server and its commands are actually reachable.
 ---
 
 `bn` is a thin client for a running Binary Ninja MCP server (binja-mcp) --
@@ -48,6 +48,14 @@ columns; `--limit`/`--offset` page through the *filtered* set.
 **Understand one function.** `bn function <name-or-addr>` for disassembly;
 `--il-level hlil` (or `mlil`/`llil`/`*_ssa`) for IL instead.
 
+**Trace references.** `bn xrefs-to <addr>` / `bn xrefs-from <addr>` list
+code and data cross-references to/from an address, each paginated
+independently via `--limit`/`--offset` (default 100/0). `bn type <name>`
+gets a defined type's definition by name. `bn search <pattern>` (substring
+or regex, `--limit`, default 50) searches function names, symbol names, and
+defined strings all at once -- for filtering *one* specific kind instead,
+prefer `bn list <kind> --filter <pattern>`.
+
 **Dump raw bytes.** `bn hex <addr> <length>` reads bytes at an address --
 `--format text` (the CLI's `--format json` default won't render as nicely)
 shows a classic offset/hex/ASCII view; `--format json` just gives the plain
@@ -59,6 +67,14 @@ explicit selection, calls default to index 0 rather than whatever's
 focused in BN's GUI -- deterministic for a headless/scripted session. Pass
 `--binary <index>` on any single command to target one without changing
 the pinned selection.
+
+**Open a binary or `.bndb`.** `bn load-binary <path>` opens it as a new
+tab in BN's GUI (needs a GUI session -- there's no headless open yet) and
+pins the selection to it, same as `bn select` afterward. Use an existing
+`.bndb` path to resume a saved analysis database instead of re-analyzing
+from scratch. A relative `<path>` resolves against the shell's cwd where
+you ran `bn`, not BN's own working directory -- true of every `bn`
+subcommand taking a file path (`load-header`, `load-script` too).
 
 **Which binary a call ran against** is always identified, but the shape
 depends on `--format`: in JSON (the default) it's a `"target"` field in the

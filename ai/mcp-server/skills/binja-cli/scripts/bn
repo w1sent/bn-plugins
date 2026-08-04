@@ -301,6 +301,31 @@ def cmd_function(conn: Connection, args) -> None:
     emit(conn.call_tool("get_function", arguments), args.format)
 
 
+def cmd_xrefs_to(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {"addr": args.addr}
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    if args.offset is not None:
+        arguments["offset"] = args.offset
+    emit(conn.call_tool("get_xrefs_to", arguments), args.format)
+
+
+def cmd_xrefs_from(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {"addr": args.addr}
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    if args.offset is not None:
+        arguments["offset"] = args.offset
+    emit(conn.call_tool("get_xrefs_from", arguments), args.format)
+
+
+def cmd_type(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    emit(conn.call_tool("get_type", {"name": args.name}), args.format)
+
+
 def _format_hexdump(base_addr: int, data: bytes, width: int = 16) -> str:
     """Classic `hexdump -C`-style offset/hex/ASCII view -- a client-side
     rendering convenience over get_data's plain hex string, same precedent
@@ -334,8 +359,25 @@ def cmd_hex(conn: Connection, args) -> None:
     print(_format_hexdump(base, data))
 
 
+def cmd_search(conn: Connection, args) -> None:
+    ensure_binary_target(conn, args)
+    arguments = {"pattern": args.pattern}
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    emit(conn.call_tool("search", arguments), args.format)
+
+
 def cmd_select(conn: Connection, args) -> None:
     emit(conn.call_tool("select_binary", {"index": args.index}), args.format)
+
+
+def cmd_load_binary(conn: Connection, args) -> None:
+    # Resolve relative to *this process's* cwd before sending: the server
+    # gets a path over HTTP and has no idea what directory `bn` was
+    # invoked from, so a relative path would otherwise resolve against
+    # BN's own (likely unrelated) working directory instead.
+    resolved = str(Path(args.path).expanduser().resolve())
+    emit(conn.call_tool("load_binary", {"path": resolved}), args.format)
 
 
 def cmd_save_all(conn: Connection, args) -> None:
@@ -443,7 +485,8 @@ def cmd_create_struct(conn: Connection, args) -> None:
 
 def cmd_load_header(conn: Connection, args) -> None:
     ensure_binary_target(conn, args)
-    emit(conn.call_tool("load_header", {"path": args.path}), args.format)
+    resolved = str(Path(args.path).expanduser().resolve())
+    emit(conn.call_tool("load_header", {"path": resolved}), args.format)
 
 
 def cmd_set_type(conn: Connection, args) -> None:
@@ -599,7 +642,8 @@ def cmd_execute_script(conn: Connection, args) -> None:
 
 def cmd_load_script(conn: Connection, args) -> None:
     ensure_binary_target(conn, args)
-    _run_script_like(conn, args, "load_script", {"path": args.path})
+    resolved = str(Path(args.path).expanduser().resolve())
+    _run_script_like(conn, args, "load_script", {"path": resolved})
 
 
 def cmd_run_snippet(conn: Connection, args) -> None:
@@ -789,12 +833,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_func.add_argument("name_or_addr", help="Function name, or address (hex or decimal)")
     p_func.add_argument("--il-level", dest="il_level", choices=_IL_LEVELS, default=None, help="Default: disassembly")
 
+    p_xto = sub.add_parser("xrefs-to", parents=[common], help="Cross-references (code and data) to an address")
+    p_xto.add_argument("addr")
+    p_xto.add_argument("--limit", type=int, default=None, help="Default: 100")
+    p_xto.add_argument("--offset", type=int, default=None, help="Default: 0")
+
+    p_xfrom = sub.add_parser("xrefs-from", parents=[common], help="Cross-references (code and data) from an address")
+    p_xfrom.add_argument("addr")
+    p_xfrom.add_argument("--limit", type=int, default=None, help="Default: 100")
+    p_xfrom.add_argument("--offset", type=int, default=None, help="Default: 0")
+
+    p_type = sub.add_parser("type", parents=[common], help="Get a type's definition by name")
+    p_type.add_argument("name")
+
     p_hex = sub.add_parser("hex", parents=[common], help="Dump raw bytes at an address (hex+ASCII view in --format text)")
     p_hex.add_argument("addr")
     p_hex.add_argument("length", type=int, help="Number of bytes to read")
 
+    p_search = sub.add_parser(
+        "search", parents=[common], help="Search function/symbol names and defined strings for a pattern"
+    )
+    p_search.add_argument("pattern")
+    p_search.add_argument("--limit", type=int, default=None, help="Default: 50")
+
     p_select = sub.add_parser("select", parents=[common], help="Select which open binary subsequent calls target")
     p_select.add_argument("index", type=int, help="Index into program://binaries")
+
+    p_load = sub.add_parser(
+        "load-binary", parents=[common], help="Open a binary or .bndb file in the GUI (as a new tab) and select it"
+    )
+    p_load.add_argument("path", help="Path to the binary or .bndb file to open")
 
     sub.add_parser("health", parents=[common], help="Check connectivity, auth, and which commands are enabled")
 
@@ -945,8 +1013,13 @@ def build_parser() -> argparse.ArgumentParser:
 _BINARY_SCOPED_COMMANDS = {
     "list": cmd_list,
     "function": cmd_function,
+    "xrefs-to": cmd_xrefs_to,
+    "xrefs-from": cmd_xrefs_from,
+    "type": cmd_type,
     "hex": cmd_hex,
+    "search": cmd_search,
     "select": cmd_select,
+    "load-binary": cmd_load_binary,
     "rename-function": cmd_rename_function,
     "rename-symbol": cmd_rename_symbol,
     "comment": cmd_comment,

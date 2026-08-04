@@ -114,6 +114,8 @@ commercial-only headless mode when testing plugins.
 | `select_binary(index)` | Select which open binary subsequent tool calls operate on, by index into `program://binaries` |
 | `load_binary(path)` | Open a binary/`.bndb` as a new GUI tab and select it |
 | `save_all()` | Save every open binary's analysis database -- creates a `.bndb` next to the original file for binaries that don't have one yet, otherwise saves a snapshot to the existing one |
+| `reanalyze(wait=True)` | Trigger a full re-analysis of the current binary from scratch (same as BN's GUI "Reanalyze"); blocks until done by default, `wait=False` triggers it on BN's own background threads and returns immediately |
+| `analysis_status()` | Report the current binary's analysis progress (state/count/total from BN's own `AnalysisProgress`) -- poll this after `reanalyze(wait=False)` |
 
 ### Debugging (`mcp_server.debugging_enabled`, default **off**)
 
@@ -255,16 +257,18 @@ at a non-default one instead. Run `bn --help` / `bn health` for its own
 documentation and live status; see the `binja-cli` skill for a usage guide.
 Defaults to `--format json`; pass `--format text` for the tab-separated form.
 
-Covers every non-execution tool: `list`/`function`/`select` (read),
+Covers every tool except `debugging.py`: `list`/`function`/`xrefs-to`/
+`xrefs-from`/`type`/`hex`/`search`/`select`/`load-binary` (read),
 `rename-function`/`rename-symbol`/`comment`/`function-comment`/
 `create-struct`/`load-header`/`set-type`/`create-function` (safe write),
 `patch-asm`/`edit-hex` (destructive write), `undo`, `screenshot` (saves a
-PNG to a file), and `search-docs`/`read-logs`/`create-snippet`/
-`list-snippets` (non-execution scripting). Deliberately not covered: all of
-`debugging.py` and `scripting.py`'s `execute_script`/`load_script`/
-`run_snippet`/`get_script_status`/`cancel_script` -- process/execution
-control is a bigger, riskier CLI-ergonomics problem than everything else
-here (see ADR-0038's "Update" section); use raw MCP tool calls for those.
+PNG to a file), `search-docs`/`read-logs`/`create-snippet`/`list-snippets`/
+`execute-script`/`load-script`/`run-snippet`/`job status`/`job cancel`/
+`job wait` (scripting, sync or async), and `analyze`/`analysis-status`/
+`instance save-all` (administration). Deliberately not covered: all of
+`debugging.py` -- process/execution control is a bigger, riskier
+CLI-ergonomics problem than everything else here (see ADR-0038's "Update"
+section); use raw MCP tool calls for those.
 
 ## Dependencies
 
