@@ -37,7 +37,9 @@ afterward; it never lists or touches anything else in that directory.
 import asyncio
 import importlib.util
 import io
+import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -49,6 +51,18 @@ _PLUGIN_DIR = _HERE.parent.parent  # ai/mcp-server
 _REPO_ROOT = _PLUGIN_DIR.parent.parent
 
 _TEST_PORT = 19090  # arbitrary, unlikely to collide with a real running instance
+
+# This test's start_server()/stop_server() calls must not touch the *real*
+# connection file (~/.cache/binja-mcp/server.json) -- this process is
+# independent from any real, concurrently-running BN instance, but the file
+# lives at one fixed, shared, per-user path (see connection_file.py), so
+# without this override this test would overwrite a real server's
+# connection info with its own throwaway one, then delete it again on
+# stop_server(), breaking `bn health` for the real instance even though it's
+# perfectly healthy the whole time. Confirmed live: exactly this happened.
+# Set here, at import time, before _load_plugin_modules() ever pulls in
+# connection_file.py (which reads this env var once, at module-exec time).
+os.environ["BINJA_MCP_CONNECTION_FILE"] = tempfile.mktemp(prefix="mcp-server-test-", suffix=".json")
 
 _PASS, _FAIL = [], []
 
@@ -422,6 +436,7 @@ def main():
         settings.set_bool("mcp_server.undo_enabled", orig_undo_enabled)
         settings.set_bool("mcp_server.debugging_enabled", orig_debugging_enabled)
         settings.set_bool("mcp_server.screenshot_enabled", orig_screenshot_enabled)
+        Path(os.environ["BINJA_MCP_CONNECTION_FILE"]).unlink(missing_ok=True)
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
 

@@ -246,7 +246,11 @@ def install_cli(dest_dir: Path, dry_run: bool) -> Result:
     return Result("bn-cli", "ok", f"linked {dest} -> {_CLI_SRC}{note}")
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    """`argv=None` parses `sys.argv[1:]` as usual for command-line use; pass
+    an explicit list to drive this in-process instead (e.g. the plugin's own
+    "Install MCP Clients" GUI command, which calls this directly rather than
+    shelling out -- see `mcp_server/__init__.py`)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", default=_DEFAULT_URL, help=f"MCP endpoint URL (default: {_DEFAULT_URL})")
     parser.add_argument("--name", default=_DEFAULT_NAME, help=f"Server name to register (default: {_DEFAULT_NAME})")
@@ -296,7 +300,7 @@ def main() -> int:
     )
     parser.add_argument("--no-cli", action="store_true", help="Don't install the bn CLI onto PATH")
     parser.add_argument("--dry-run", action="store_true", help="Print what would change without writing anything")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     clients = [c.strip() for c in args.clients.split(",") if c.strip()]
     unknown = set(clients) - set(_ALL_CLIENTS)

@@ -9,6 +9,15 @@ Not the only way to point the CLI at a server -- an explicit --server flag
 or BN_MCP_URL/BN_MCP_API_KEY env var both take precedence over this file
 (the CLI's job, not this module's) for a remote BN or any other
 non-default topology.
+
+The path itself is overridable via BINJA_MCP_CONNECTION_FILE -- exists so
+tests/run.py's own start_server()/stop_server() calls (a second, independent
+process exercising the real code against a throwaway test port) write to an
+isolated file instead of silently overwriting *and then deleting* a real,
+concurrently-running BN instance's connection info out from under it. That
+collision isn't hypothetical: it happened during this plugin's own
+development, more than once, including breaking `bn health` for an
+otherwise perfectly healthy server (see the fix that added this override).
 """
 
 import json
@@ -16,7 +25,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-_PATH = Path.home() / ".cache" / "binja-mcp" / "server.json"
+_PATH = Path(os.environ["BINJA_MCP_CONNECTION_FILE"]) if os.environ.get("BINJA_MCP_CONNECTION_FILE") else (
+    Path.home() / ".cache" / "binja-mcp" / "server.json"
+)
 
 
 def path() -> Path:

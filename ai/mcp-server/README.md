@@ -198,6 +198,7 @@ open):
 | Start Server | Start the MCP server |
 | Stop Server | Stop the MCP server |
 | Copy API Key | Copy the current API key to the clipboard |
+| Install MCP Clients | Run `scripts/install_mcp_clients.py` in-process against this instance's own URL/API key -- registers Claude Code/Codex/OpenCode/DeepAgents and links the `bn` CLI without a terminal. Works whether or not the server has been started yet; results go to the log, not a popup. |
 
 ## Status bar indicator
 

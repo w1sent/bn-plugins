@@ -3,6 +3,7 @@
     start_server(*, host=None, port=None) -> MCPServer
     stop_server(server=None)
     get_server_status() -> ServerStatus
+    get_effective_endpoint() -> tuple[str, int]
     ensure_api_key() -> str
 
 The server is process-global (not bound to a particular BinaryView) --
@@ -93,6 +94,18 @@ def start_server(*, host: Optional[str] = None, port: Optional[int] = None) -> M
     settings = Settings()
     with _lock:
         if _server is not None and _server.running:
+            # Re-write the connection file even though nothing about the
+            # server itself changed: it can go missing or get overwritten
+            # out from under a long-running server by something else on the
+            # same machine writing the same fixed path (e.g. tests/run.py
+            # against a real BN instance, before BINJA_MCP_CONNECTION_FILE
+            # existed -- confirmed live), and calling start_server() again
+            # (e.g. clicking "Start Server" when it's already running) is
+            # the natural way a user tries to repair that. Cheap and
+            # idempotent, so doing it unconditionally here beats requiring
+            # an actual stop/start cycle to fix a `bn health` that can't
+            # find the server anymore despite it being perfectly healthy.
+            connection_file.write(_server.host, _server.port, _current_api_key())
             return _server
 
         ensure_api_key()
@@ -119,6 +132,23 @@ def stop_server(server: Optional[MCPServer] = None) -> None:
             _server = None
         gui.set_server_running(False)
         connection_file.remove()
+
+
+def get_effective_endpoint() -> tuple[str, int]:
+    """Host/port an MCP client should target right now: the running
+    server's actual bind address/port if one is up, otherwise whatever a
+    start_server() call would use (configured settings, falling back to
+    defaults) -- same resolution as start_server() itself, without actually
+    starting anything. For callers that need a URL to hand a client
+    regardless of whether the server has been started yet, e.g. the
+    "Install MCP Clients" GUI command."""
+    with _lock:
+        if _server is not None and _server.running:
+            return _server.host, _server.port
+    settings = Settings()
+    host = settings.get_string(_HOST_KEY) or _DEFAULT_HOST
+    port = settings.get_integer(_PORT_KEY) or _DEFAULT_PORT
+    return host, port
 
 
 def get_server_status() -> ServerStatus:
