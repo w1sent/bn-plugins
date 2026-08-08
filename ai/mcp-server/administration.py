@@ -152,6 +152,25 @@ def _binary_selected() -> dict:
     }
 
 
+_HEADLESS_LICENSE_TIERS = ("Ultimate", "Commercial")
+
+
+def _program_info() -> dict:
+    """Static info about the running Binary Ninja instance itself, not any
+    particular binary -- currently just enough to know whether headless
+    scripting is available under this license. BN's headless API (running
+    scripts via a standalone `binaryninja` Python import/CLI invocation,
+    with no GUI) is gated to the Ultimate/Commercial license tiers per
+    BNGetProduct(); every other tier (Free, Personal, Student, Enterprise
+    Client, ...) can only run scripts inside a live GUI session -- see the
+    binja-cli skill for why that makes `bn execute-script`/`load-script`/
+    `run-snippet` the way to run scripts there instead of a standalone
+    headless script."""
+    product = binaryninja.core_product()
+    headless_supported = bool(product) and any(tier in product for tier in _HEADLESS_LICENSE_TIERS)
+    return {"product": product, "headless_supported": headless_supported}
+
+
 def _program_plugins() -> dict:
     rm = binaryninja.RepositoryManager()
     plugins = []
@@ -189,6 +208,11 @@ def register(mcp) -> None:
     mcp.resource(
         "program://binaries", name="program_binaries", description="All binaries currently open in the GUI"
     )(_program_binaries)
+    mcp.resource(
+        "program://info",
+        name="program_info",
+        description="Info about the running Binary Ninja instance/license (product, headless script support)",
+    )(_program_info)
     mcp.resource("program://plugins", name="program_plugins", description="Installed Binary Ninja plugins")(
         _program_plugins
     )

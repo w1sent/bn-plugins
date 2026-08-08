@@ -155,6 +155,7 @@ run to completion, silently missing the breakpoint.
 | `binary://selected` | The currently selected/focused binary (path, arch, whether the selection is explicit) |
 | `program://binaries` | All binaries currently open in the GUI, with their index and selection state |
 | `program://plugins` | Installed Binary Ninja plugins (from BN's own plugin manager) |
+| `program://info` | The running instance's license product string and whether it supports headless scripts (`binaryninja.core_product()`; Ultimate/Commercial tiers only -- surfaced by `bn health` as `headless support: true/false`) |
 
 See "Future improvements" for `gui://status`.
 

@@ -19,6 +19,16 @@ not something to route around; "process: not running" or "process:
 unknown" (no local connection file) means there's nothing to reach yet --
 see `bn instance start` below.
 
+`bn health` also reports **`headless support: true/false`**, derived from
+the connected instance's license (`binaryninja.core_product()` -- only
+product names containing "Ultimate" or "Commercial" support running scripts
+headless; Free/Personal/Student/Enterprise-Client licenses don't). **If
+`headless support: false`, don't try to run a standalone headless Python
+script against this license -- it'll fail.** Use `bn execute-script`/`bn
+load-script`/`bn run-snippet` instead: they run the script inside *this*
+already-licensed, already-running GUI session over the MCP server, which
+works regardless of headless support (see "Run a script" below).
+
 **No BN running yet, or need to reload a plugin change?** `bn instance
 start` launches the Binary Ninja application itself (local process, not an
 MCP call -- there's no server to call until BN is up); `bn instance close`

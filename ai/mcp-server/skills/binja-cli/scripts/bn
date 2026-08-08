@@ -16,9 +16,12 @@ Server discovery, highest priority first:
      case: BN and this CLI on the same machine.
 
 Run `bn <subcommand> --help` for a subcommand's own options. `bn health`
-checks connectivity/auth and reports which commands the server currently
-has enabled -- unlike --help, which is static and always shows the full
-command set regardless of what the server's settings actually allow.
+checks connectivity/auth, reports which commands the server currently has
+enabled -- unlike --help, which is static and always shows the full command
+set regardless of what the server's settings actually allow -- and whether
+the connected BN instance's license supports running scripts headless
+(Ultimate/Commercial tiers only; every other tier needs a live GUI session,
+i.e. `bn execute-script`/`load-script`/`run-snippet` against this server).
 """
 
 import argparse
@@ -766,6 +769,16 @@ def cmd_health(args) -> int:
         return 1
 
     try:
+        info = conn.read_resource("program://info") or {}
+        headless = info.get("headless_supported")
+        label = "unknown" if headless is None else ("true" if headless else "false")
+        product = info.get("product")
+        suffix = f" ({product})" if product else ""
+        print(f"  headless support: {label}{suffix}")
+    except BnError as e:
+        print(f"  headless support: unknown -- {e}")
+
+    try:
         names = sorted(t["name"] for t in conn.list_tools())
     except BnError as e:
         print(f"  tools/list: FAIL -- {e}")
@@ -864,7 +877,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_load.add_argument("path", help="Path to the binary or .bndb file to open")
 
-    sub.add_parser("health", parents=[common], help="Check connectivity, auth, and which commands are enabled")
+    sub.add_parser(
+        "health",
+        parents=[common],
+        help="Check connectivity, auth, which commands are enabled, and headless script support",
+    )
 
     # -- instance lifecycle (local process control, no MCP server needed for
     # start/close/restart; save-all is a real tool call) --------------------
